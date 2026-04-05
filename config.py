@@ -13,16 +13,34 @@ if env_file.exists():
 
 # ── Platform Identity ────────────────────────────────────────
 PLATFORM_NAME = "Alpha FX Hub"
+ENGINE_NAME = "Alpha FX Engine"
 PLATFORM_TAG = "alpha_fx_hub"
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
-# ── Telegram Bot ─────────────────────────────────────────────
+# ── Telegram Configuration ───────────────────────────────────
+# Bot: Alpha FX Pilot @alphaedge_gold_bot
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "")
+TELEGRAM_BOT_USERNAME = "alphaedge_gold_bot"
+
+# Public Channel: Alpha FX Hub (news + basic strategy for everyone)
+TELEGRAM_PUBLIC_CHANNEL_ID = os.environ.get("TELEGRAM_PUBLIC_CHANNEL_ID", "")
+TELEGRAM_PUBLIC_CHANNEL_LINK = "https://t.me/+CskTnfXWW4s1YWI1"
+
+# Private Channel: Alpha FX Edge (premium signals for subscribers)
+TELEGRAM_PRIVATE_CHANNEL_ID = os.environ.get("TELEGRAM_PRIVATE_CHANNEL_ID", "")
+TELEGRAM_PRIVATE_CHANNEL_LINK = "https://t.me/+6EFH7b6AJNNjNTQ1"
+
+# Legacy alias (for backward compatibility)
+TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_PRIVATE_CHANNEL_ID", "")
+
 ADMIN_TELEGRAM_IDS = [
     int(x.strip()) for x in os.environ.get("ADMIN_TELEGRAM_IDS", "").split(",")
     if x.strip().isdigit()
 ]
+
+# Subscription pricing (free period currently)
+SUBSCRIPTION_PRICE_USD = 99.0
+IS_FREE_PERIOD = True
 
 # ── MetaAPI (MT5 Connection) ────────────────────────────────
 METAAPI_TOKEN = os.environ.get("METAAPI_TOKEN", "")

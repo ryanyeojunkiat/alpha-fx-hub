@@ -1,6 +1,21 @@
 """
-Alpha FX Hub — Telegram Bot
-Full onboarding flow + signal delivery + admin commands.
+Alpha FX Pilot — Telegram Bot
+@alphaedge_gold_bot
+
+Full onboarding flow with data collection, dual-channel system:
+  PUBLIC channel (Alpha FX Hub): News + basic strategy for everyone
+  PRIVATE channel (Alpha FX Edge): Premium signals for subscribers
+
+Onboarding questions:
+  1. Income range
+  2. Trading experience
+  3. Current job/industry
+  4. Planned deposit amount (USD)
+  5. Trading goals
+  6. How did you find us
+  7. FP Markets referral signup + proof
+
+Admin commands: /approve, /reject, /users, /stats, /broadcast, /news
 """
 import json
 import logging
@@ -9,37 +24,148 @@ import threading
 import time
 import requests
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 from pathlib import Path
 
 logger = logging.getLogger("alpha_fx_hub.bot")
 
-# Onboarding states
+# ── Onboarding States ────────────────────────────────────────
 STATE_NEW = "new"
-STATE_ASKED_CAPITAL = "asked_capital"
-STATE_ASKED_EXPERIENCE = "asked_experience"
-STATE_SENT_STEPS = "sent_steps"
+STATE_Q1_INCOME = "q1_income"
+STATE_Q2_EXPERIENCE = "q2_experience"
+STATE_Q3_JOB = "q3_job"
+STATE_Q4_DEPOSIT = "q4_deposit"
+STATE_Q5_GOALS = "q5_goals"
+STATE_Q6_SOURCE = "q6_source"
+STATE_REFERRAL = "referral_signup"
 STATE_WAITING_PROOF = "waiting_proof"
 STATE_PENDING_APPROVAL = "pending_approval"
 STATE_APPROVED = "approved"
 STATE_REJECTED = "rejected"
 
 
+# ── Question Definitions ─────────────────────────────────────
+QUESTIONS = {
+    STATE_Q1_INCOME: {
+        "question": (
+            "<b>Question 1/6 — Monthly Income</b>\n\n"
+            "What is your approximate monthly income?\n\n"
+            "A) Below $1,000 USD\n"
+            "B) $1,000 — $3,000 USD\n"
+            "C) $3,000 — $5,000 USD\n"
+            "D) $5,000 — $10,000 USD\n"
+            "E) Above $10,000 USD\n\n"
+            "<i>Reply with A, B, C, D, or E</i>"
+        ),
+        "field": "income",
+        "valid": {"a": "Below $1,000", "b": "$1,000-$3,000", "c": "$3,000-$5,000",
+                  "d": "$5,000-$10,000", "e": "Above $10,000"},
+        "next": STATE_Q2_EXPERIENCE,
+    },
+    STATE_Q2_EXPERIENCE: {
+        "question": (
+            "<b>Question 2/6 — Trading Experience</b>\n\n"
+            "How long have you been trading?\n\n"
+            "A) Brand new — never traded before\n"
+            "B) Less than 6 months\n"
+            "C) 6 months — 1 year\n"
+            "D) 1 — 3 years\n"
+            "E) 3+ years (experienced)\n\n"
+            "<i>Reply with A, B, C, D, or E</i>"
+        ),
+        "field": "experience",
+        "valid": {"a": "Brand new", "b": "Less than 6 months", "c": "6 months - 1 year",
+                  "d": "1-3 years", "e": "3+ years"},
+        "next": STATE_Q3_JOB,
+    },
+    STATE_Q3_JOB: {
+        "question": (
+            "<b>Question 3/6 — Current Job</b>\n\n"
+            "What industry do you work in?\n\n"
+            "A) Finance / Banking\n"
+            "B) Technology / IT\n"
+            "C) Business Owner / Entrepreneur\n"
+            "D) Healthcare / Medical\n"
+            "E) Other (please type your job)\n\n"
+            "<i>Reply with A, B, C, D, E, or type your answer</i>"
+        ),
+        "field": "job",
+        "valid": {"a": "Finance/Banking", "b": "Technology/IT", "c": "Business Owner",
+                  "d": "Healthcare/Medical", "e": "Other"},
+        "next": STATE_Q4_DEPOSIT,
+        "allow_freetext": True,
+    },
+    STATE_Q4_DEPOSIT: {
+        "question": (
+            "<b>Question 4/6 — Planned Deposit</b>\n\n"
+            "How much are you planning to deposit for trading?\n"
+            "<i>(Please enter the amount in USD, e.g. 500 or $1,000)</i>"
+        ),
+        "field": "deposit",
+        "type": "amount",
+        "next": STATE_Q5_GOALS,
+    },
+    STATE_Q5_GOALS: {
+        "question": (
+            "<b>Question 5/6 — Trading Goals</b>\n\n"
+            "What do you want to achieve with gold trading?\n\n"
+            "A) Side income — earn extra money consistently\n"
+            "B) Full-time trading — replace my job income\n"
+            "C) Learn to trade — education is my priority\n"
+            "D) Grow my savings — long-term wealth building\n"
+            "E) Other (please type)\n\n"
+            "<i>Reply with A, B, C, D, E, or type your answer</i>"
+        ),
+        "field": "goals",
+        "valid": {"a": "Side income", "b": "Full-time trading", "c": "Learn to trade",
+                  "d": "Grow savings", "e": "Other"},
+        "next": STATE_Q6_SOURCE,
+        "allow_freetext": True,
+    },
+    STATE_Q6_SOURCE: {
+        "question": (
+            "<b>Question 6/6 — How Did You Find Us?</b>\n\n"
+            "A) Social media (Instagram, TikTok, etc.)\n"
+            "B) Friend / referral\n"
+            "C) YouTube\n"
+            "D) Google search\n"
+            "E) Telegram search\n"
+            "F) Other (please type)\n\n"
+            "<i>Reply with A, B, C, D, E, F, or type your answer</i>"
+        ),
+        "field": "source",
+        "valid": {"a": "Social media", "b": "Friend/Referral", "c": "YouTube",
+                  "d": "Google search", "e": "Telegram search", "f": "Other"},
+        "next": STATE_REFERRAL,
+        "allow_freetext": True,
+    },
+}
+
+
 class TelegramBot:
     """
+    Alpha FX Pilot — the main Telegram bot.
+
     Handles:
-    1. User onboarding (capital check, referral, approval)
-    2. Signal broadcasting
-    3. Admin commands (/signal, /approve, /reject, /users, /stats)
+    1. User onboarding with 6-question data collection
+    2. FP Markets referral signup flow
+    3. Dual-channel management (public + private)
+    4. Admin commands
+    5. Auto news posting to public channel
     """
 
-    def __init__(self, bot_token: str, channel_id: str, admin_ids: list,
-                 fp_link: str, fp_code: str, data_dir: str = None):
+    def __init__(self, bot_token: str, public_channel_id: str, private_channel_id: str,
+                 admin_ids: list, fp_link: str, fp_code: str,
+                 public_channel_link: str = "", private_channel_link: str = "",
+                 data_dir: str = None):
         self.bot_token = bot_token
-        self.channel_id = channel_id
+        self.public_channel_id = public_channel_id
+        self.private_channel_id = private_channel_id
         self.admin_ids = admin_ids
         self.fp_link = fp_link
         self.fp_code = fp_code
+        self.public_channel_link = public_channel_link or "https://t.me/+CskTnfXWW4s1YWI1"
+        self.private_channel_link = private_channel_link or "https://t.me/+6EFH7b6AJNNjNTQ1"
         self.base_url = f"https://api.telegram.org/bot{bot_token}"
         self.data_dir = Path(data_dir) if data_dir else Path(__file__).parent.parent / "data"
         self.data_dir.mkdir(exist_ok=True)
@@ -47,6 +173,9 @@ class TelegramBot:
         self._polling = False
         self._offset = 0
 
+    # ═══════════════════════════════════════════════════════════
+    # POLLING
+    # ═══════════════════════════════════════════════════════════
     def start_polling(self):
         """Start polling for messages in a background thread."""
         if self._polling or not self.bot_token:
@@ -54,13 +183,12 @@ class TelegramBot:
         self._polling = True
         thread = threading.Thread(target=self._poll_loop, daemon=True)
         thread.start()
-        logger.info("Telegram bot polling started")
+        logger.info("Alpha FX Pilot bot polling started")
 
     def stop_polling(self):
         self._polling = False
 
     def _poll_loop(self):
-        """Main polling loop."""
         while self._polling:
             try:
                 resp = requests.get(
@@ -81,15 +209,20 @@ class TelegramBot:
                 logger.error(f"Polling error: {e}")
                 time.sleep(5)
 
+    # ═══════════════════════════════════════════════════════════
+    # MESSAGE ROUTING
+    # ═══════════════════════════════════════════════════════════
     def _handle_update(self, update: dict):
-        """Route incoming messages."""
         msg = update.get("message", {})
         if not msg:
+            # Handle callback queries if we add inline buttons later
             return
 
         chat_id = str(msg["chat"]["id"])
         text = msg.get("text", "").strip()
-        user_name = msg.get("from", {}).get("first_name", "Trader")
+        user_info = msg.get("from", {})
+        user_name = user_info.get("first_name", "Trader")
+        username = user_info.get("username", "")
 
         # Admin commands
         if int(chat_id) in self.admin_ids:
@@ -105,132 +238,301 @@ class TelegramBot:
             elif text == "/stats":
                 self._cmd_stats(chat_id)
                 return
+            elif text.startswith("/broadcast"):
+                self._cmd_broadcast(chat_id, text)
+                return
+            elif text.startswith("/news"):
+                self._cmd_news(chat_id, text)
+                return
 
-        # User commands / onboarding
+        # User commands
         if text == "/start":
-            self._start_onboarding(chat_id, user_name)
+            self._start_onboarding(chat_id, user_name, username)
         elif text == "/status":
             self._cmd_status(chat_id)
+        elif text == "/help":
+            self._cmd_help(chat_id)
         else:
-            self._process_onboarding(chat_id, text, user_name)
+            self._process_onboarding(chat_id, text, user_name, username)
 
-    # ── ONBOARDING FLOW ─────────────────────────────────────
-    def _start_onboarding(self, chat_id: str, name: str):
-        """Welcome message + ask capital."""
+    # ═══════════════════════════════════════════════════════════
+    # ONBOARDING FLOW
+    # ═══════════════════════════════════════════════════════════
+    def _start_onboarding(self, chat_id: str, name: str, username: str = ""):
+        """Welcome message and start question flow."""
         self.users[chat_id] = {
             "name": name,
-            "state": STATE_ASKED_CAPITAL,
+            "username": username,
+            "state": STATE_Q1_INCOME,
             "joined": datetime.now(timezone.utc).isoformat(),
-            "capital": 0,
-            "experience": "",
+            "answers": {},
         }
         self._save_users()
 
-        msg = f"""
-Welcome to <b>Alpha FX Hub</b>, {name}! \U0001f31f
+        welcome = f"""
+\U0001f31f <b>Welcome to Alpha FX Hub!</b> \U0001f31f
 
-We provide professional XAUUSD (Gold) trading signals powered by our 17-module AI analysis engine.
+Hi {name}! I'm <b>Alpha FX Pilot</b>, your personal assistant.
 
-To get started, I need to know:
-<b>How much trading capital do you plan to deposit (in USD)?</b>
+<b>Alpha FX Hub</b> is a professional XAUUSD (Gold) trading platform powered by our <b>Alpha FX Engine</b> — a 17-module AI signal system built with institutional Smart Money Concepts.
 
-(Minimum: $500)
+\U0001f4ca <b>What we provide:</b>
+  \u2022 Real-time gold trading signals (A+ to B grade)
+  \u2022 10-TP partial close system with trailing SL
+  \u2022 CHoCH structure break alerts (RED & YELLOW)
+  \u2022 FVG second-wave entry opportunities
+  \u2022 Economic calendar with gold-impact analysis
+  \u2022 Complete Trading Academy (beginner to advanced)
+
+\U0001f4b0 <b>Subscription:</b> Currently in <b>FREE TRIAL</b> period!
+(Regular price: $99 USD/month)
+
+Before we get started, I have a few quick questions to better serve you.
+Let's go! \U0001f680
 """
-        self._send(chat_id, msg.strip())
+        self._send(chat_id, welcome.strip())
+        time.sleep(0.5)
 
-    def _process_onboarding(self, chat_id: str, text: str, name: str):
-        """Process onboarding based on user's current state."""
+        # Send first question
+        self._send(chat_id, QUESTIONS[STATE_Q1_INCOME]["question"])
+
+    def _process_onboarding(self, chat_id: str, text: str, name: str, username: str = ""):
+        """Process onboarding answers based on current state."""
         user = self.users.get(chat_id)
         if not user:
-            self._start_onboarding(chat_id, name)
+            self._start_onboarding(chat_id, name, username)
             return
 
         state = user.get("state", STATE_NEW)
 
-        if state == STATE_ASKED_CAPITAL:
-            try:
-                capital = float(text.replace("$", "").replace(",", "").strip())
-            except ValueError:
-                self._send(chat_id, "Please enter a number (e.g., 1000 or $1,000):")
+        # Handle question states
+        if state in QUESTIONS:
+            q = QUESTIONS[state]
+            answer = self._validate_answer(text, q)
+
+            if answer is None:
+                self._send(chat_id, "Please choose one of the options above, or type your answer.")
                 return
 
-            if capital < 500:
-                self._send(chat_id,
-                    "We require a minimum of <b>$500</b> starting capital to ensure "
-                    "proper risk management with our signal system.\n\n"
-                    "Please come back when you're ready with at least $500.")
-                user["state"] = STATE_REJECTED
-                user["capital"] = capital
-                self._save_users()
-                return
+            # Save answer
+            user["answers"][q["field"]] = answer
+            next_state = q["next"]
+            user["state"] = next_state
+            self._save_users()
 
-            user["capital"] = capital
-            user["state"] = STATE_ASKED_EXPERIENCE
+            # If deposit question, validate amount
+            if q.get("type") == "amount":
+                user["answers"]["deposit_raw"] = text
+
+            # Send confirmation + next question or move to referral
+            if next_state in QUESTIONS:
+                self._send(chat_id, f"\u2705 Got it!\n\n{QUESTIONS[next_state]['question']}")
+            elif next_state == STATE_REFERRAL:
+                self._send_referral_step(chat_id, user)
+
+        elif state == STATE_REFERRAL:
+            # They should be going to FP Markets — any reply moves to proof
+            user["state"] = STATE_WAITING_PROOF
             self._save_users()
             self._send(chat_id,
-                f"Great, ${capital:,.0f} is a solid starting capital.\n\n"
-                "Quick question: <b>How long have you been trading?</b>\n"
-                "a) Brand new\n"
-                "b) Less than 1 year\n"
-                "c) 1-3 years\n"
-                "d) 3+ years")
-
-        elif state == STATE_ASKED_EXPERIENCE:
-            user["experience"] = text
-            user["state"] = STATE_SENT_STEPS
-            self._save_users()
-
-            msg = f"""
-Thanks! Here's how to get started:
-
-<b>Step 1:</b> Open a trading account with FP Markets using our link:
-{self.fp_link}
-
-<b>Step 2:</b> Use referral code: <code>{self.fp_code}</code>
-
-<b>Step 3:</b> Deposit your trading capital
-
-<b>Step 4:</b> Send me a screenshot of your account dashboard showing:
-  \u2022 Your account is active
-  \u2022 The referral code is applied
-
-Once verified, you'll receive:
-  \u2713 Access to our premium signal channel
-  \u2713 Alpha FX Hub trading manual
-  \u2713 24/7 gold signals with entry, SL, and 10 TP levels
-  \u2713 Real-time CHoCH alerts to protect your trades
-
-Send your screenshot when ready!
-"""
-            self._send(chat_id, msg.strip())
-            user["state"] = STATE_WAITING_PROOF
+                "\U0001f4f8 <b>Great!</b> Now please send me a screenshot showing:\n\n"
+                "  \u2022 Your FP Markets account is active\n"
+                "  \u2022 The referral code M4-66209 is applied\n\n"
+                "You can send a screenshot or photo here.")
 
         elif state == STATE_WAITING_PROOF:
-            # Any message at this point is treated as proof submission
+            # Any message (photo or text) is treated as proof
             user["state"] = STATE_PENDING_APPROVAL
             user["proof_submitted"] = datetime.now(timezone.utc).isoformat()
             self._save_users()
 
             self._send(chat_id,
-                "Thank you! Your registration is being reviewed by our admin.\n"
-                "You'll be notified once approved (usually within 24 hours).")
+                "\u2705 <b>Registration complete!</b>\n\n"
+                "Your application is being reviewed.\n"
+                "You'll be notified once approved (usually within a few hours).\n\n"
+                "In the meantime, join our <b>public channel</b> for free gold news and basic strategies:\n"
+                f"\U0001f449 {self.public_channel_link}")
 
             # Notify admins
-            for admin_id in self.admin_ids:
-                self._send(str(admin_id),
-                    f"New registration pending:\n"
-                    f"Name: {user['name']}\n"
-                    f"Capital: ${user['capital']:,.0f}\n"
-                    f"Experience: {user['experience']}\n"
-                    f"Chat ID: {chat_id}\n\n"
-                    f"Reply /approve {chat_id} or /reject {chat_id}")
+            self._notify_admins_new_user(chat_id, user)
 
         elif state == STATE_APPROVED:
             self._send(chat_id,
-                "You're already approved! Check the signal channel for the latest signals.\n"
-                "Use /status to check your account status.")
+                "\u2705 You're already a member!\n\n"
+                f"\U0001f4e2 Public Channel: {self.public_channel_link}\n"
+                f"\U0001f510 Private Signals: {self.private_channel_link}\n"
+                f"\U0001f310 Website: alpha-fx-hub.streamlit.app\n\n"
+                "Use /status to check your account. Use /help for commands.")
 
-    # ── ADMIN COMMANDS ───────────────────────────────────────
+        elif state == STATE_REJECTED:
+            self._send(chat_id,
+                "Your previous application was not approved.\n"
+                "Send /start to try again.")
+
+    def _validate_answer(self, text: str, question: dict) -> Optional[str]:
+        """Validate and normalize user answer."""
+        text_lower = text.lower().strip()
+
+        # Amount type (deposit question)
+        if question.get("type") == "amount":
+            try:
+                amount = float(text_lower.replace("$", "").replace(",", "").replace("usd", "").strip())
+                return f"${amount:,.0f} USD"
+            except ValueError:
+                return None
+
+        # Multiple choice
+        valid = question.get("valid", {})
+        if text_lower in valid:
+            return valid[text_lower]
+
+        # Allow free text for some questions
+        if question.get("allow_freetext") and len(text) >= 2:
+            return text
+
+        return None
+
+    def _send_referral_step(self, chat_id: str, user: dict):
+        """Send FP Markets + MT5 setup instructions."""
+        answers = user.get("answers", {})
+        deposit = answers.get("deposit", "N/A")
+
+        # Message 1: Profile summary
+        msg1 = f"""
+\u2705 <b>All questions answered!</b> Thanks for sharing.
+
+<b>Your Profile:</b>
+  \U0001f4b0 Income: {answers.get('income', 'N/A')}
+  \U0001f4c8 Experience: {answers.get('experience', 'N/A')}
+  \U0001f4bc Job: {answers.get('job', 'N/A')}
+  \U0001f4b5 Deposit: {deposit}
+  \U0001f3af Goal: {answers.get('goals', 'N/A')}
+
+Now let me guide you through setting up your trading account step by step! \U0001f447
+"""
+        self._send(chat_id, msg1.strip())
+        time.sleep(1)
+
+        # Message 2: FP Markets account setup
+        msg2 = f"""
+\U0001f3c6 <b>STEP 1 — Open FP Markets Account</b>
+
+FP Markets is our trusted broker — tight spreads, fast execution, and MT5 support.
+
+\u26a0\ufe0f <b>IMPORTANT for Malaysia users:</b>
+Before opening the link, you MUST install <b>1.1.1.1</b> (Cloudflare WARP) app first and turn on the VPN.
+  \u2022 iPhone: Search "1.1.1.1" in App Store
+  \u2022 Android: Search "1.1.1.1" in Play Store
+  \u2022 Turn it ON, then open the link below
+
+<b>Registration Link (with our referral):</b>
+\U0001f449 {self.fp_link}
+
+<b>Referral Code:</b> <code>{self.fp_code}</code>
+
+<b>How to register:</b>
+1. Open the link above (VPN on for MY users)
+2. Click "Open Live Account"
+3. Fill in your details (name, email, phone)
+4. Choose account type: <b>Standard</b>
+5. Choose platform: <b>MetaTrader 5 (MT5)</b>
+6. Choose leverage: <b>1:500</b> (recommended)
+7. Base currency: <b>USD</b>
+8. Complete verification (upload IC/passport)
+9. Make sure referral code <code>{self.fp_code}</code> is applied
+
+\u23f3 Verification usually takes 1-2 business days.
+"""
+        self._send(chat_id, msg2.strip())
+        time.sleep(1)
+
+        # Message 3: MT5 setup
+        msg3 = """
+\U0001f4f1 <b>STEP 2 — Install MetaTrader 5 (MT5)</b>
+
+MT5 is the trading platform where you execute trades.
+
+<b>Download MT5:</b>
+  \u2022 iPhone: Search "MetaTrader 5" in App Store
+  \u2022 Android: Search "MetaTrader 5" in Play Store
+  \u2022 PC/Mac: https://www.metatrader5.com/en/download
+
+<b>How to connect your FP Markets account:</b>
+1. Open MT5 app
+2. Tap "Settings" (gear icon) or "Accounts"
+3. Tap "+ New Account" or "Login to existing account"
+4. Search for broker: <b>FP Markets</b> or <b>FPMarkets-Live</b>
+5. Enter your MT5 login number (from FP Markets email)
+6. Enter your MT5 password
+7. Tap "Sign In"
+
+<b>You should see:</b>
+  \u2713 Your account balance at the top
+  \u2713 XAUUSD in the market list (search "XAUUSD" or "Gold")
+  \u2713 Connection status: green icon = connected
+
+\u2753 <i>Can't find XAUUSD? Make sure you selected MT5 (not MT4) when registering.</i>
+"""
+        self._send(chat_id, msg3.strip())
+        time.sleep(1)
+
+        # Message 4: Deposit + proof
+        msg4 = f"""
+\U0001f4b5 <b>STEP 3 — Deposit Your Trading Capital</b>
+
+Deposit: {deposit}
+
+<b>Deposit methods on FP Markets:</b>
+  \u2022 Bank Transfer (0% fee, 1-2 days)
+  \u2022 Credit/Debit Card (instant)
+  \u2022 Skrill / Neteller (instant)
+  \u2022 Crypto (USDT, BTC — instant)
+
+<b>To deposit:</b>
+1. Login to FP Markets Client Portal
+2. Go to "Funding" > "Deposit"
+3. Choose your method and amount
+4. Follow the instructions
+
+\U0001f4f8 <b>STEP 4 — Send Me Proof</b>
+
+Once your account is set up and funded, send me a screenshot showing:
+  \u2022 Your FP Markets dashboard (account is active)
+  \u2022 OR your MT5 app showing your balance
+
+Just send the screenshot as a photo here and I'll process your registration!
+
+\u2753 <i>Already have an FP Markets account? Just send me a screenshot of your MT5 dashboard.</i>
+"""
+        self._send(chat_id, msg4.strip())
+
+    def _notify_admins_new_user(self, chat_id: str, user: dict):
+        """Notify all admins about a new registration."""
+        answers = user.get("answers", {})
+        admin_msg = f"""
+\U0001f514 <b>NEW REGISTRATION</b>
+
+Name: {user.get('name', 'Unknown')}
+Username: @{user.get('username', 'N/A')}
+Chat ID: {chat_id}
+Joined: {user.get('joined', 'N/A')[:10]}
+
+<b>Answers:</b>
+  Income: {answers.get('income', 'N/A')}
+  Experience: {answers.get('experience', 'N/A')}
+  Job: {answers.get('job', 'N/A')}
+  Deposit: {answers.get('deposit', 'N/A')}
+  Goals: {answers.get('goals', 'N/A')}
+  Source: {answers.get('source', 'N/A')}
+
+Reply: /approve {chat_id} or /reject {chat_id}
+"""
+        for admin_id in self.admin_ids:
+            self._send(str(admin_id), admin_msg.strip())
+
+    # ═══════════════════════════════════════════════════════════
+    # ADMIN COMMANDS
+    # ═══════════════════════════════════════════════════════════
     def _cmd_approve(self, admin_id: str, text: str):
         parts = text.split()
         if len(parts) < 2:
@@ -238,22 +540,44 @@ Send your screenshot when ready!
             return
 
         user_id = parts[1]
-        if user_id in self.users:
-            self.users[user_id]["state"] = STATE_APPROVED
-            self.users[user_id]["approved_at"] = datetime.now(timezone.utc).isoformat()
-            self._save_users()
-
-            self._send(user_id,
-                "Congratulations! You've been approved!\n\n"
-                "You now have access to:\n"
-                "\u2713 Premium XAUUSD signals\n"
-                "\u2713 Real-time TP/SL notifications\n"
-                "\u2713 CHoCH structure alerts\n"
-                "\u2713 FVG entry opportunities\n\n"
-                "Welcome to Alpha FX Hub!")
-            self._send(admin_id, f"User {user_id} approved.")
-        else:
+        if user_id not in self.users:
             self._send(admin_id, f"User {user_id} not found.")
+            return
+
+        self.users[user_id]["state"] = STATE_APPROVED
+        self.users[user_id]["approved_at"] = datetime.now(timezone.utc).isoformat()
+        self._save_users()
+
+        # Send approval message with both channel links
+        self._send(user_id, f"""
+\U0001f389 <b>Congratulations! You've been APPROVED!</b>
+
+Welcome to the Alpha FX family!
+
+\u2705 <b>Your Access:</b>
+
+\U0001f4e2 <b>Public Channel (Alpha FX Hub):</b>
+  Gold news, basic strategies, market updates
+  \U0001f449 {self.public_channel_link}
+
+\U0001f510 <b>Private Channel (Alpha FX Edge):</b>
+  Premium signals, TP alerts, CHoCH warnings
+  \U0001f449 {self.private_channel_link}
+
+\U0001f310 <b>Web Dashboard:</b>
+  Full platform with charts, academy, backtest
+  \U0001f449 alpha-fx-hub.streamlit.app
+
+<b>What you'll receive in Alpha FX Edge:</b>
+  \u2022 A+ and A grade XAUUSD signals
+  \u2022 10 TP levels with partial close alerts
+  \u2022 RED/YELLOW CHoCH structure alerts
+  \u2022 FVG second-wave entry opportunities
+  \u2022 Daily performance summaries
+
+Trade smart. Trade gold. \U0001f947
+""".strip())
+        self._send(admin_id, f"\u2705 User {user_id} ({self.users[user_id].get('name')}) approved.")
 
     def _cmd_reject(self, admin_id: str, text: str):
         parts = text.split()
@@ -262,45 +586,198 @@ Send your screenshot when ready!
             return
 
         user_id = parts[1]
-        reason = " ".join(parts[2:]) or "Requirements not met"
+        reason = " ".join(parts[2:]) or "Requirements not met at this time."
 
         if user_id in self.users:
             self.users[user_id]["state"] = STATE_REJECTED
             self._save_users()
-            self._send(user_id, f"Your registration was not approved.\nReason: {reason}")
+            self._send(user_id,
+                f"Thank you for your interest in Alpha FX Hub.\n\n"
+                f"Unfortunately, your application was not approved at this time.\n"
+                f"Reason: {reason}\n\n"
+                f"You can still join our public channel for free content:\n"
+                f"\U0001f449 {self.public_channel_link}\n\n"
+                f"Send /start to reapply anytime.")
             self._send(admin_id, f"User {user_id} rejected.")
+        else:
+            self._send(admin_id, f"User {user_id} not found.")
 
     def _cmd_users(self, admin_id: str):
+        total = len(self.users)
         approved = sum(1 for u in self.users.values() if u.get("state") == STATE_APPROVED)
         pending = sum(1 for u in self.users.values() if u.get("state") == STATE_PENDING_APPROVAL)
-        total = len(self.users)
-        self._send(admin_id,
-            f"Users: {total} total\n"
-            f"Approved: {approved}\n"
-            f"Pending: {pending}")
+        onboarding = sum(1 for u in self.users.values() if u.get("state", "").startswith("q"))
+        rejected = sum(1 for u in self.users.values() if u.get("state") == STATE_REJECTED)
+
+        # Pending users detail
+        pending_list = ""
+        for cid, u in self.users.items():
+            if u.get("state") == STATE_PENDING_APPROVAL:
+                pending_list += f"\n  \u2022 {u.get('name', '?')} (@{u.get('username', 'N/A')}) — /approve {cid}"
+
+        msg = f"""
+\U0001f4ca <b>User Statistics</b>
+
+Total users: {total}
+\u2705 Approved: {approved}
+\u23f3 Pending: {pending}
+\U0001f4dd Onboarding: {onboarding}
+\u274c Rejected: {rejected}
+{f'<b>Pending approvals:</b>{pending_list}' if pending_list else ''}
+"""
+        self._send(admin_id, msg.strip())
 
     def _cmd_stats(self, admin_id: str):
-        self._send(admin_id, "Use the web dashboard for full statistics.")
+        """Show detailed stats."""
+        approved_users = [u for u in self.users.values() if u.get("state") == STATE_APPROVED]
+        if not approved_users:
+            self._send(admin_id, "No approved users yet.")
+            return
+
+        # Experience breakdown
+        exp_counts = {}
+        for u in approved_users:
+            exp = u.get("answers", {}).get("experience", "Unknown")
+            exp_counts[exp] = exp_counts.get(exp, 0) + 1
+
+        # Source breakdown
+        src_counts = {}
+        for u in approved_users:
+            src = u.get("answers", {}).get("source", "Unknown")
+            src_counts[src] = src_counts.get(src, 0) + 1
+
+        exp_str = "\n".join(f"  {k}: {v}" for k, v in exp_counts.items())
+        src_str = "\n".join(f"  {k}: {v}" for k, v in src_counts.items())
+
+        self._send(admin_id, f"""
+\U0001f4ca <b>Detailed Stats ({len(approved_users)} approved)</b>
+
+<b>Experience:</b>
+{exp_str}
+
+<b>Source:</b>
+{src_str}
+""".strip())
+
+    def _cmd_broadcast(self, admin_id: str, text: str):
+        """Admin broadcast to all approved users."""
+        msg_text = text.replace("/broadcast", "", 1).strip()
+        if not msg_text:
+            self._send(admin_id, "Usage: /broadcast <message>")
+            return
+
+        count = 0
+        for cid, u in self.users.items():
+            if u.get("state") == STATE_APPROVED:
+                self._send(cid, f"\U0001f4e2 <b>Alpha FX Hub Broadcast</b>\n\n{msg_text}")
+                count += 1
+        self._send(admin_id, f"Broadcast sent to {count} approved users.")
+
+    def _cmd_news(self, admin_id: str, text: str):
+        """Manually post news to public channel."""
+        news_text = text.replace("/news", "", 1).strip()
+        if not news_text:
+            self._send(admin_id, "Usage: /news <your news message>")
+            return
+
+        result = self.post_to_public(f"\U0001f4f0 <b>Gold Market Update</b>\n\n{news_text}\n\n<i>— Alpha FX Hub</i>")
+        self._send(admin_id, "News posted to public channel." if result else "Failed to post.")
 
     def _cmd_status(self, chat_id: str):
         user = self.users.get(chat_id)
         if not user:
             self._send(chat_id, "You're not registered. Send /start to begin.")
             return
-        state = user.get("state", "unknown")
-        self._send(chat_id, f"Status: {state.replace('_', ' ').title()}")
 
-    # ── HELPERS ──────────────────────────────────────────────
+        state = user.get("state", "unknown")
+        state_display = {
+            STATE_APPROVED: "\u2705 Approved — Full access",
+            STATE_PENDING_APPROVAL: "\u23f3 Pending admin review",
+            STATE_WAITING_PROOF: "\U0001f4f8 Waiting for your FP Markets screenshot",
+            STATE_REJECTED: "\u274c Not approved — send /start to reapply",
+        }
+        status_text = state_display.get(state, f"Onboarding in progress ({state})")
+        self._send(chat_id, f"<b>Your Status:</b> {status_text}")
+
+    def _cmd_help(self, chat_id: str):
+        is_admin = int(chat_id) in self.admin_ids
+        msg = """
+\u2753 <b>Alpha FX Pilot Commands</b>
+
+/start — Begin registration
+/status — Check your account status
+/help — Show this help message
+"""
+        if is_admin:
+            msg += """
+<b>Admin Commands:</b>
+/approve <chat_id> — Approve a user
+/reject <chat_id> [reason] — Reject a user
+/users — Show user statistics
+/stats — Detailed user breakdown
+/broadcast <message> — Send to all approved users
+/news <message> — Post news to public channel
+"""
+        self._send(chat_id, msg.strip())
+
+    # ═══════════════════════════════════════════════════════════
+    # CHANNEL POSTING
+    # ═══════════════════════════════════════════════════════════
+    def post_to_public(self, text: str) -> bool:
+        """Post a message to the PUBLIC channel (Alpha FX Hub)."""
+        return self._send(self.public_channel_id, text)
+
+    def post_to_private(self, text: str) -> bool:
+        """Post a message to the PRIVATE channel (Alpha FX Edge)."""
+        return self._send(self.private_channel_id, text)
+
+    def post_news_auto(self, events: list) -> bool:
+        """Auto-post Trading Economics news to public channel."""
+        if not events:
+            return False
+
+        msg = "\U0001f4f0 <b>Gold Market News — Economic Calendar</b>\n\n"
+        for event in events[:5]:  # Top 5 events
+            importance = event.get("importance", 0)
+            stars = "\u2b50" * min(importance, 3)
+            name = event.get("event", "Unknown")
+            country = event.get("country", "")
+            date_str = event.get("date", "")[:10]
+            impact = event.get("gold_impact", {})
+            typical = impact.get("typical_impact", "")
+
+            msg += f"{stars} <b>{name}</b>"
+            if country:
+                msg += f" ({country})"
+            msg += f"\n  Date: {date_str}"
+            if typical:
+                msg += f"\n  Gold Impact: {typical}"
+            msg += "\n\n"
+
+        msg += "<i>Stay informed. Trade smart.\n— Alpha FX Hub</i>"
+        return self.post_to_public(msg)
+
+    def post_strategy_tip(self, tip: str) -> bool:
+        """Post a trading strategy tip to the public channel."""
+        msg = f"\U0001f4a1 <b>Gold Trading Tip</b>\n\n{tip}\n\n<i>— Alpha FX Hub Academy</i>"
+        return self.post_to_public(msg)
+
+    # ═══════════════════════════════════════════════════════════
+    # HELPERS
+    # ═══════════════════════════════════════════════════════════
     def _send(self, chat_id: str, text: str) -> bool:
-        if not self.bot_token:
+        if not self.bot_token or not chat_id:
             return False
         try:
-            requests.post(
+            resp = requests.post(
                 f"{self.base_url}/sendMessage",
                 json={"chat_id": chat_id, "text": text,
                       "parse_mode": "HTML", "disable_web_page_preview": True},
                 timeout=10,
             )
+            if resp.status_code != 200:
+                logger.error(f"Telegram API error: {resp.text}")
+                return False
             return True
         except Exception as e:
             logger.error(f"Send failed: {e}")
@@ -318,11 +795,17 @@ Send your screenshot when ready!
 
     def _save_users(self):
         try:
+            self.data_dir.mkdir(exist_ok=True)
             with open(self.data_dir / "users.json", "w") as f:
-                json.dump(self.users, f, indent=2)
+                json.dump(self.users, f, indent=2, default=str)
         except Exception as e:
             logger.error(f"Save users failed: {e}")
 
     def get_approved_users(self) -> list:
-        """Get list of approved user chat IDs."""
         return [cid for cid, u in self.users.items() if u.get("state") == STATE_APPROVED]
+
+    def get_user_count(self) -> dict:
+        total = len(self.users)
+        approved = sum(1 for u in self.users.values() if u.get("state") == STATE_APPROVED)
+        pending = sum(1 for u in self.users.values() if u.get("state") == STATE_PENDING_APPROVAL)
+        return {"total": total, "approved": approved, "pending": pending}

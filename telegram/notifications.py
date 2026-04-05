@@ -16,11 +16,20 @@ logger = logging.getLogger("alpha_fx_hub.notifications")
 
 
 class NotificationManager:
-    """Sends formatted Telegram notifications for all alert types."""
+    """Sends formatted Telegram notifications for all alert types.
 
-    def __init__(self, bot_token: str, channel_id: str):
+    Dual-channel system:
+      - Public (Alpha FX Hub): news, tips, general updates
+      - Private (Alpha FX Edge): signals, TP alerts, CHoCH warnings
+    """
+
+    def __init__(self, bot_token: str, private_channel_id: str = "",
+                 public_channel_id: str = ""):
         self.bot_token = bot_token
-        self.channel_id = channel_id
+        self.private_channel_id = private_channel_id
+        self.public_channel_id = public_channel_id
+        # Legacy: channel_id maps to private for backward compat
+        self.channel_id = private_channel_id
         self.base_url = f"https://api.telegram.org/bot{bot_token}"
 
     def send(self, chat_id: str, text: str, parse_mode: str = "HTML") -> bool:
@@ -32,7 +41,7 @@ class NotificationManager:
             resp = requests.post(
                 f"{self.base_url}/sendMessage",
                 json={
-                    "chat_id": chat_id or self.channel_id,
+                    "chat_id": chat_id or self.private_channel_id,
                     "text": text,
                     "parse_mode": parse_mode,
                     "disable_web_page_preview": True,
@@ -45,8 +54,12 @@ class NotificationManager:
             return False
 
     def broadcast(self, text: str) -> bool:
-        """Broadcast message to the main channel."""
-        return self.send(self.channel_id, text)
+        """Broadcast to PRIVATE channel (Alpha FX Edge — premium signals)."""
+        return self.send(self.private_channel_id, text)
+
+    def broadcast_public(self, text: str) -> bool:
+        """Broadcast to PUBLIC channel (Alpha FX Hub — news & tips)."""
+        return self.send(self.public_channel_id, text)
 
     # ── SIGNAL BROADCAST ────────────────────────────────────
     def send_signal(self, signal: dict) -> bool:
