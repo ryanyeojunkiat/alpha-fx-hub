@@ -57,6 +57,7 @@ FP_LINK = os.environ.get(
 )
 FP_CODE = os.environ.get("FP_MARKETS_CODE", "M4-66209")
 TE_API_KEY = os.environ.get("TE_API_KEY", "")
+TD_API_KEY = os.environ.get("TWELVE_DATA_API_KEY", "")
 PUBLIC_LINK = "https://t.me/+CskTnfXWW4s1YWI1"
 PRIVATE_LINK = "https://t.me/+6EFH7b6AJNNjNTQ1"
 
@@ -139,7 +140,8 @@ def main():
     news_poster = NewsPoster(
         notifier=notifier,
         te_api_key=TE_API_KEY,
-        interval_seconds=7200,  # Every 2 hours
+        td_api_key=TD_API_KEY,
+        interval_seconds=3600,  # Every 1 hour
     )
 
     # Graceful shutdown
