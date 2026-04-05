@@ -1,0 +1,19 @@
+services:
+  - type: worker
+    name: alpha-fx-bot
+    runtime: python
+    buildCommand: pip install python-dotenv requests
+    startCommand: python bot_runner.py
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_PUBLIC_CHANNEL_ID
+        sync: false
+      - key: TELEGRAM_PRIVATE_CHANNEL_ID
+        sync: false
+      - key: ADMIN_TELEGRAM_IDS
+        sync: false
+      - key: FP_MARKETS_LINK
+        sync: false
+      - key: FP_MARKETS_CODE
+        sync: false

@@ -188,52 +188,6 @@ st.markdown("""
 
 
 # ═════════════════════════════════════════════════════════════
-# GLOBAL SINGLETONS — ONE BOT INSTANCE FOR ALL USERS
-# ═════════════════════════════════════════════════════════════
-_global_bot: Optional[TelegramBot] = None
-_global_bot_lock = threading.Lock()
-_global_notifier: Optional[NotificationManager] = None
-
-
-def _get_global_bot() -> Optional[TelegramBot]:
-    """Return a single shared bot instance across all Streamlit sessions."""
-    global _global_bot
-    if _global_bot is not None:
-        return _global_bot
-    with _global_bot_lock:
-        # Double-check inside lock
-        if _global_bot is not None:
-            return _global_bot
-        if TELEGRAM_BOT_TOKEN:
-            _global_bot = TelegramBot(
-                bot_token=TELEGRAM_BOT_TOKEN,
-                public_channel_id=TELEGRAM_PUBLIC_CHANNEL_ID,
-                private_channel_id=TELEGRAM_PRIVATE_CHANNEL_ID,
-                admin_ids=ADMIN_TELEGRAM_IDS,
-                fp_link=FP_MARKETS_LINK,
-                fp_code=FP_MARKETS_CODE,
-                public_channel_link=TELEGRAM_PUBLIC_CHANNEL_LINK,
-                private_channel_link=TELEGRAM_PRIVATE_CHANNEL_LINK,
-                data_dir=os.path.join(os.path.dirname(__file__), "data"),
-            )
-            _global_bot.start_polling()
-            logger.info("Telegram bot (Alpha FX Pilot) started — global singleton")
-    return _global_bot
-
-
-def _get_global_notifier() -> Optional[NotificationManager]:
-    """Return a single shared notifier instance."""
-    global _global_notifier
-    if _global_notifier is None:
-        _global_notifier = NotificationManager(
-            bot_token=TELEGRAM_BOT_TOKEN,
-            private_channel_id=TELEGRAM_PRIVATE_CHANNEL_ID,
-            public_channel_id=TELEGRAM_PUBLIC_CHANNEL_ID,
-        )
-    return _global_notifier
-
-
-# ═════════════════════════════════════════════════════════════
 # SESSION STATE INITIALIZATION
 # ═════════════════════════════════════════════════════════════
 def init_state():
@@ -255,9 +209,15 @@ def init_state():
     if "balance" not in st.session_state:
         st.session_state.balance = 10000.0
 
-    # ── Telegram Bot & Notifier (use global singleton, NOT session_state) ──
-    st.session_state.telegram_bot = _get_global_bot()
-    st.session_state.notifier = _get_global_notifier()
+    # ── Notification Manager (for sending signals to channels) ──
+    # NOTE: Telegram bot polling runs separately via bot_runner.py on Render.com
+    if "notifier" not in st.session_state:
+        st.session_state.notifier = NotificationManager(
+            bot_token=TELEGRAM_BOT_TOKEN,
+            private_channel_id=TELEGRAM_PRIVATE_CHANNEL_ID,
+            public_channel_id=TELEGRAM_PUBLIC_CHANNEL_ID,
+        )
+    st.session_state.telegram_bot = None
 
 init_state()
 
