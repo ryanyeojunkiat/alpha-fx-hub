@@ -1,13 +1,15 @@
 """
-Alpha FX Hub — Gold Engine V4 Hybrid
-=====================================
-17-module XAUUSD analysis system combining:
-- Auto Forex Trading's Gold Engine V4 (scoring + structure)
-- Signal Platform's S/D zone detection (freshness tracking)
-- NEW: Real-time CHoCH monitoring for open trade protection
-- NEW: FVG second-wave entry detection
+Alpha FX Hub — Gold Engine V5 Institutional
+=============================================
+20-module XAUUSD analysis system combining:
+- Gold Engine V4 (17 technical modules + scoring + structure)
+- NEW Module 18: COT Data + DXY Correlation (institutional positioning)
+- NEW Module 19: Smart News Filter (auto-pause before high-impact events)
+- NEW Module 20: Volume Confirmation (breakout validation + accumulation)
+- Real-time CHoCH monitoring for open trade protection
+- FVG second-wave entry detection
 
-All decisions are pure technical — NO LLM dependency.
+Technical + Institutional — following the smart money.
 """
 import numpy as np
 import pandas as pd
@@ -20,8 +22,12 @@ from .indicators import (
     detect_displacement, detect_fvg_candles, detect_engulfing,
     bb_squeeze_active,
 )
+from .institutional import score_cot_dxy, score_news_filter, score_volume, COTAnalyzer
 
 logger = logging.getLogger("alpha_fx_hub.gold_engine")
+
+# Shared COT analyzer (singleton, caches data)
+_cot = COTAnalyzer()
 
 
 # ════════════════════════════════════════════════════════════════
@@ -690,13 +696,20 @@ def gold_engine_score(
     df_h4: pd.DataFrame,
     direction: str,
     utc_hour: int = None,
+    events: list = None,
+    td_api_key: str = "",
 ) -> dict:
     """
-    Run all 17 modules and produce final score + grade.
+    Run all 20 modules and produce final score + grade.
+
+    Modules 1-17: Pure technical (original Gold Engine V4)
+    Module 18: COT Data + DXY Correlation (institutional positioning)
+    Module 19: Smart News Filter (event danger detection)
+    Module 20: Volume Confirmation (breakout/fakeout detection)
 
     Returns dict with:
         score, grade, confidence, direction, modules (detail per module),
-        h4_aligned, confirmations, contradictions
+        h4_aligned, confirmations, contradictions, blocked, institutional_bias
     """
     if utc_hour is None:
         utc_hour = datetime.now(timezone.utc).hour
@@ -724,31 +737,59 @@ def gold_engine_score(
     m16 = _score_bb_squeeze(df_m15, direction)
     m17 = _score_round_numbers(price)
 
-    # Sum scores
-    raw_score = sum([
+    # ── NEW: Institutional Modules (18-20) ──
+    # Module 18: COT + DXY
+    cot_data = _cot.fetch_cot_data()
+    dxy_data = _cot.fetch_dxy_trend(td_api_key)
+    m18 = score_cot_dxy(direction, cot_data, dxy_data)
+
+    # Module 19: Smart News Filter
+    m19 = score_news_filter(events or [], direction)
+
+    # Module 20: Volume Confirmation
+    m20 = score_volume(df_m15, direction)
+
+    # Sum scores (technical + institutional)
+    technical_score = sum([
         m1["score"], m2["score"], m3["score"], m4["score"],
         m5["score"], m6["score"], m7["score"], m8["score"],
         m9["score"], m10["score"], m11["score"], m12["score"],
         m13["score"], m14["score"], m15["score"], m16["score"],
         m17["score"],
     ])
+    institutional_score = m18["score"] + m19["score"] + m20["score"]
+    raw_score = technical_score + institutional_score
 
     # Normalize to 0-100 range
-    # Max possible positive: ~140, typical good signal: 60-80
-    score = max(0, min(100, int(raw_score * 0.7 + 30)))
+    # Max possible positive: ~167 (140 tech + 27 institutional)
+    # Adjusted multiplier to account for wider range
+    score = max(0, min(100, int(raw_score * 0.6 + 30)))
 
     # Count confirmations and contradictions
-    confirmations = sum(1 for m in [m1, m2, m3, m4, m5, m6, m7, m8, m9, m11, m12, m13, m14, m15, m16, m17]
+    confirmations = sum(1 for m in [m1, m2, m3, m4, m5, m6, m7, m8, m9, m11, m12, m13, m14, m15, m16, m17, m18, m20]
                        if m["score"] > 0)
-    contradictions = sum(1 for m in [m1, m4, m8, m10, m11]
+    contradictions = sum(1 for m in [m1, m4, m8, m10, m11, m18, m19, m20]
                         if m["score"] < 0)
 
     # Hard caps
     h4_aligned = m1.get("h4_aligned", False)
     overextended = m10.get("overextended", False)
+    news_blocked = m19.get("danger_level") == "BLOCKED"
 
-    grade = _assign_grade(score, h4_aligned, overextended, confirmations, contradictions)
+    # If news filter says BLOCKED, cap grade to D regardless of score
+    if news_blocked:
+        grade = "D"
+    else:
+        grade = _assign_grade(score, h4_aligned, overextended, confirmations, contradictions)
+
     confidence = _assign_confidence(score, grade, h4_aligned, m5.get("killzone", ""), m1.get("h4_trend", ""))
+
+    # Determine institutional bias
+    inst_bias = "NEUTRAL"
+    if m18["score"] >= 5:
+        inst_bias = "BULLISH" if direction == "BUY" else "BEARISH"
+    elif m18["score"] <= -5:
+        inst_bias = "BEARISH" if direction == "BUY" else "BULLISH"
 
     modules = {
         "mtf_alignment": m1,
@@ -768,11 +809,16 @@ def gold_engine_score(
         "displacement": m15,
         "bb_squeeze": m16,
         "round_numbers": m17,
+        "cot_dxy": m18,
+        "news_filter": m19,
+        "volume": m20,
     }
 
     return {
         "score": score,
         "raw_score": raw_score,
+        "technical_score": technical_score,
+        "institutional_score": institutional_score,
         "grade": grade,
         "confidence": confidence,
         "direction": direction,
@@ -780,6 +826,8 @@ def gold_engine_score(
         "h4_aligned": h4_aligned,
         "confirmations": confirmations,
         "contradictions": contradictions,
+        "news_blocked": news_blocked,
+        "institutional_bias": inst_bias,
         "modules": modules,
     }
 

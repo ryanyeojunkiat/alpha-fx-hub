@@ -15,6 +15,16 @@ from .gold_engine import gold_engine_score, detect_fvg_entry
 from .levels import compute_levels, compute_10tp_levels, compute_lot_tiers
 from .data import fetch_bars
 
+# Calendar import for news filter
+try:
+    from academy.calendar import fetch_economic_calendar, get_gold_impact_events
+except ImportError:
+    # Fallback if calendar module not available
+    def fetch_economic_calendar(**kwargs):
+        return []
+    def get_gold_impact_events(events):
+        return events
+
 logger = logging.getLogger("alpha_fx_hub.scanner")
 
 
@@ -44,6 +54,9 @@ class Signal:
     contradictions: int = 0
     fvg_entry: dict = field(default_factory=dict)
     modules: dict = field(default_factory=dict)
+    institutional_bias: str = ""    # "BULLISH", "BEARISH", "NEUTRAL"
+    news_danger: str = ""           # "CLEAR", "CAUTION", "DANGER"
+    institutional_score: int = 0
     notes: str = ""
 
     def to_dict(self) -> dict:
@@ -60,9 +73,10 @@ class SignalScanner:
     Dual-mode: Scalp (M15 entry) + Swing (H4 entry).
     """
 
-    def __init__(self, balance: float = 10000.0, api_key: str = None):
+    def __init__(self, balance: float = 10000.0, api_key: str = None, te_api_key: str = ""):
         self.balance = balance
         self.api_key = api_key
+        self.te_api_key = te_api_key  # Trading Economics key for news filter
         self.last_scalp_signal_time = 0
         self.last_swing_signal_time = 0
         self.last_scalp_direction = None
@@ -90,12 +104,29 @@ class SignalScanner:
         df_h1 = add_indicators(df_h1)
         df_h4 = add_indicators(df_h4)
 
+        # Fetch economic calendar for news filter (Module 19)
+        try:
+            calendar_events = fetch_economic_calendar(api_key=self.te_api_key)
+            gold_events = get_gold_impact_events(calendar_events)
+        except Exception as e:
+            logger.warning(f"Calendar fetch failed: {e}")
+            gold_events = []
+
         now = time.time()
         utc_hour = datetime.now(timezone.utc).hour
 
         # Determine possible directions
         for direction in ["BUY", "SELL"]:
-            result = gold_engine_score(df_m15, df_h1, df_h4, direction, utc_hour)
+            result = gold_engine_score(
+                df_m15, df_h1, df_h4, direction, utc_hour,
+                events=gold_events, td_api_key=self.api_key or "",
+            )
+
+            # NEWS FILTER HARD BLOCK — do not generate signal if high-impact event imminent
+            if result.get("news_blocked"):
+                blocking_event = result["modules"].get("news_filter", {}).get("blocking_event", "")
+                logger.info(f"Signal BLOCKED by news filter: {blocking_event} — {direction} skipped")
+                continue
 
             # Check FVG second-wave opportunities
             fvg_entries = detect_fvg_entry(df_m15, df_h1)
@@ -181,6 +212,9 @@ class SignalScanner:
             contradictions=engine_result["contradictions"],
             fvg_entry=fvg_entry or {},
             modules=engine_result["modules"],
+            institutional_bias=engine_result.get("institutional_bias", "NEUTRAL"),
+            news_danger=engine_result["modules"].get("news_filter", {}).get("danger_level", "CLEAR"),
+            institutional_score=engine_result.get("institutional_score", 0),
         )
 
         # Add notes
@@ -193,6 +227,17 @@ class SignalScanner:
             notes.append("OTE confluence detected")
         if engine_result["modules"]["liquidity_sweep"].get("detected"):
             notes.append("Liquidity sweep confirmed")
+
+        # Institutional notes
+        inst_bias = engine_result.get("institutional_bias", "NEUTRAL")
+        if inst_bias != "NEUTRAL":
+            notes.append(f"Institutional bias: {inst_bias}")
+        cot_notes = engine_result["modules"].get("cot_dxy", {}).get("notes", [])
+        if cot_notes:
+            notes.append(cot_notes[0])  # Add top COT insight
+        vol_notes = engine_result["modules"].get("volume", {}).get("notes", [])
+        if vol_notes:
+            notes.append(vol_notes[0])  # Add top volume insight
 
         signal.notes = " | ".join(notes)
         return signal

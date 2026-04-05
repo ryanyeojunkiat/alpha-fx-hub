@@ -26,7 +26,7 @@ def _get_secret(key: str, default: str = "") -> str:
 PLATFORM_NAME = "Alpha FX Hub"
 ENGINE_NAME = "Alpha FX Engine"
 PLATFORM_TAG = "alpha_fx_hub"
-VERSION = "1.1.0"
+VERSION = "2.0.0"
 
 # ── Telegram Configuration ───────────────────────────────────
 # Bot: Alpha FX Pilot @alphaedge_gold_bot
@@ -147,9 +147,10 @@ MAX_CONCURRENT_TRADES = 3
 MAX_DAILY_LOSS_PCT = 6.0   # Hard stop: -6% daily drawdown
 MAX_DRAWDOWN_PCT = 20.0    # Hard stop: -20% total drawdown
 
-# ── Gold Engine V4 Module Weights ───────────────────────────
+# ── Gold Engine V5 Module Weights ───────────────────────────
 # Maximum bonus each module can contribute
 MODULE_WEIGHTS = {
+    # Technical Modules (1-17)
     "mtf_alignment":     15,   # Multi-timeframe trend
     "supply_demand":     12,   # Fresh S/D zone
     "fvg":                8,   # Fair Value Gap
@@ -169,6 +170,10 @@ MODULE_WEIGHTS = {
     "displacement":       7,   # Displacement candles
     "bb_squeeze":         7,   # BB Squeeze + RSI
     "round_numbers":      5,   # Psychological levels
+    # Institutional Modules (18-20)
+    "cot_dxy":           12,   # COT positioning + DXY correlation
+    "news_filter":       -15,  # News event danger (mostly penalty)
+    "volume":            10,   # Volume confirmation
 }
 
 # ── Alert Priority Levels ───────────────────────────────────
