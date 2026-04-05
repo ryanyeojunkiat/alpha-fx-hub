@@ -48,7 +48,9 @@ from engine.signal_scanner import SignalScanner, Signal
 from trading.trade_manager import TradeManager, Trade, STRATEGIES
 from trading.risk_manager import RiskManager
 from academy.lessons import ACADEMY_LESSONS, SIGNAL_MANUAL
+from academy.lessons_zh import SIGNAL_MANUAL_ZH, ACADEMY_LESSONS_ZH
 from academy.calendar import fetch_economic_calendar, get_gold_impact_events, is_high_impact_soon
+from engine.backtester import run_backtest
 
 try:
     from streamlit_autorefresh import st_autorefresh
@@ -235,6 +237,7 @@ with st.sidebar:
         "tracker": ("\U0001f4cc", "Live Trade Tracker"),
         "scoreboard": ("\U0001f3c6", "Performance Scoreboard"),
         "regime": ("\U0001f30d", "Market Regime"),
+        "backtest": ("\U0001f52c", "Backtest Engine"),
     }
 
     for key, (icon, label) in pages.items():
@@ -745,7 +748,10 @@ def page_manual():
         <div class="subtitle">How to read, understand, and trade our signals</div>
     </div>""", unsafe_allow_html=True)
 
-    for section in SIGNAL_MANUAL["sections"]:
+    lang = st.radio("Language / 语言", ["English", "中文"], horizontal=True, key="manual_lang")
+    manual = SIGNAL_MANUAL if lang == "English" else SIGNAL_MANUAL_ZH
+
+    for section in manual["sections"]:
         with st.expander(section["title"], expanded=(section["id"] == "intro")):
             st.markdown(section["content"])
 
@@ -1099,6 +1105,142 @@ def page_regime():
 
 
 # ═════════════════════════════════════════════════════════════
+# PAGE: BACKTEST ENGINE
+# ═════════════════════════════════════════════════════════════
+def page_backtest():
+    st.markdown("""<div class="gold-header">
+        <h1>\U0001f52c Backtest Engine</h1>
+        <div class="subtitle">Test our strategy against historical gold data</div>
+    </div>""", unsafe_allow_html=True)
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        bt_strategy = st.selectbox("TP Strategy", ["split_15_10", "equal_10"],
+                                    format_func=lambda x: "15/10 Split + Trailing" if x == "split_15_10" else "Equal 10%",
+                                    key="bt_strategy")
+    with col2:
+        bt_months = st.selectbox("Test Period", [3, 6, 9, 12], index=1, key="bt_months",
+                                  format_func=lambda x: f"{x} Months")
+    with col3:
+        bt_balance = st.number_input("Starting Balance ($)", value=10000, step=1000, key="bt_balance")
+    with col4:
+        bt_risk = st.selectbox("Risk Per Trade", [2.0, 3.0, 5.0], index=0, key="bt_risk",
+                                format_func=lambda x: f"{x:.0f}%")
+
+    if st.button("\U0001f680 Run Backtest", use_container_width=True, type="primary"):
+        with st.spinner("Running backtest... Analyzing historical gold data..."):
+            try:
+                results = run_backtest(
+                    strategy=bt_strategy,
+                    months=bt_months,
+                    starting_balance=bt_balance,
+                    risk_pct=bt_risk,
+                )
+                st.session_state.bt_results = results
+            except Exception as e:
+                st.error(f"Backtest error: {e}")
+                logger.error(f"Backtest failed: {e}", exc_info=True)
+                return
+
+    results = st.session_state.get("bt_results")
+    if results is None:
+        st.info("Configure parameters above and click **Run Backtest** to test the strategy against historical data.")
+        return
+
+    # ── Summary Cards ──
+    st.markdown("### \U0001f4ca Performance Summary")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Total Trades", results.get("total_trades", 0))
+    c2.metric("Win Rate", f"{results.get('win_rate_pct', 0):.1f}%")
+    c3.metric("Profit Factor", f"{results.get('profit_factor', 0):.2f}")
+    c4.metric("Total Return", f"${results.get('total_return_usd', 0):,.2f}",
+              delta=f"{results.get('total_return_pct', 0):.1f}%")
+    c5.metric("Max Drawdown", f"${results.get('max_drawdown_usd', 0):,.2f}",
+              delta=f"-{results.get('max_drawdown_pct', 0):.1f}%", delta_color="inverse")
+
+    c6, c7, c8, c9 = st.columns(4)
+    c6.metric("Wins / Losses", f"{results.get('wins', 0)} / {results.get('losses', 0)}")
+    c7.metric("Avg Win", f"${results.get('avg_win', 0):,.2f}")
+    c8.metric("Avg Loss", f"${results.get('avg_loss', 0):,.2f}")
+    c9.metric("Avg TPs Hit", f"{results.get('avg_tps_reached', 0):.1f} / 10")
+
+    # ── Equity Curve ──
+    equity_data = results.get("equity_curve", [])
+    if equity_data:
+        st.markdown("### \U0001f4c8 Equity Curve")
+        eq_df = pd.DataFrame(equity_data, columns=["time", "balance"])
+        eq_df["time"] = pd.to_datetime(eq_df["time"])
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=eq_df["time"], y=eq_df["balance"],
+            mode="lines", name="Equity",
+            line=dict(color="#00d4ff", width=2),
+            fill="tozeroy", fillcolor="rgba(0,212,255,0.08)",
+        ))
+        fig.add_hline(y=bt_balance, line_dash="dash", line_color="#6b7280",
+                      annotation_text="Starting Balance")
+        fig.update_layout(
+            template="plotly_dark", paper_bgcolor="#0a0e17", plot_bgcolor="#0a0e17",
+            height=400, margin=dict(l=50, r=50, t=30, b=30),
+            yaxis_title="Account Balance ($)", xaxis_title="Date",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ── Win Rate Breakdown ──
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        st.markdown("### \U0001f3af Win Rate by Grade")
+        grade_data = results.get("by_grade", {})
+        if grade_data:
+            grade_df = pd.DataFrame([
+                {"Grade": g, "Win Rate": f"{d.get('win_rate', 0):.1f}%", "Trades": d.get("trades", 0)}
+                for g, d in grade_data.items() if d.get("trades", 0) > 0
+            ])
+            st.dataframe(grade_df, use_container_width=True, hide_index=True)
+
+    with col_b:
+        st.markdown("### \U0001f3af Win Rate by Confidence")
+        conf_data = results.get("by_confidence", {})
+        if conf_data:
+            conf_df = pd.DataFrame([
+                {"Confidence": c, "Win Rate": f"{d.get('win_rate', 0):.1f}%", "Trades": d.get("trades", 0)}
+                for c, d in conf_data.items() if d.get("trades", 0) > 0
+            ])
+            st.dataframe(conf_df, use_container_width=True, hide_index=True)
+
+    # ── Session Performance ──
+    session_data = results.get("by_session", {})
+    if session_data:
+        st.markdown("### \U0001f553 Performance by Session")
+        sess_df = pd.DataFrame([
+            {"Session": s, "Win Rate": f"{d.get('win_rate', 0):.1f}%",
+             "Trades": d.get("trades", 0), "Avg P&L": f"${d.get('avg_pnl', 0):,.2f}"}
+            for s, d in session_data.items() if d.get("trades", 0) > 0
+        ])
+        st.dataframe(sess_df, use_container_width=True, hide_index=True)
+
+    # ── Monthly Breakdown ──
+    monthly = results.get("monthly", [])
+    if monthly:
+        st.markdown("### \U0001f4c5 Monthly Breakdown")
+        month_df = pd.DataFrame(monthly)
+        if not month_df.empty:
+            st.dataframe(month_df, use_container_width=True, hide_index=True)
+
+    # ── Trade Log ──
+    trades_log = results.get("trades", [])
+    if trades_log:
+        with st.expander(f"Full Trade Log ({len(trades_log)} trades)"):
+            log_df = pd.DataFrame(trades_log)
+            display_cols = [c for c in ["trade_num", "entry_time", "direction", "entry_price",
+                                         "sl", "grade", "confidence", "tps_reached", "pnl",
+                                         "r_multiple", "status"] if c in log_df.columns]
+            if display_cols:
+                st.dataframe(log_df[display_cols], use_container_width=True, hide_index=True)
+
+
+# ═════════════════════════════════════════════════════════════
 # PAGE ROUTER
 # ═════════════════════════════════════════════════════════════
 PAGE_MAP = {
@@ -1111,6 +1253,7 @@ PAGE_MAP = {
     "tracker": page_tracker,
     "scoreboard": page_scoreboard,
     "regime": page_regime,
+    "backtest": page_backtest,
 }
 
 # Route to current page

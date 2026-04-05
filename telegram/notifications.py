@@ -185,7 +185,7 @@ H4 Trend: {signal.get('h4_trend', 'N/A')} | KZ: {signal.get('killzone', 'N/A')}
   {'Moved to BREAKEVEN' if tp_num == 1 else f"Trailed to ${trade.get('sl', 0):.2f}"}
 
 \U0001f4b0 Running total: {tp_num}/10 TPs hit
-{''.join(['\U0001f7e9' for _ in range(tp_num)])}{'\u2b1c' * (10 - tp_num)}
+{tp_num * chr(0x1f7e9)}{(10 - tp_num) * chr(0x2b1c)}
 
 <b>Alpha FX Hub</b> | Partial Close Strategy
 """
