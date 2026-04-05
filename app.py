@@ -31,7 +31,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import (
     PLATFORM_NAME, VERSION, SYMBOL, SYMBOL_PIP,
-    TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, ADMIN_TELEGRAM_IDS,
+    TELEGRAM_BOT_TOKEN, ADMIN_TELEGRAM_IDS,
+    TELEGRAM_PUBLIC_CHANNEL_ID, TELEGRAM_PRIVATE_CHANNEL_ID,
+    TELEGRAM_PUBLIC_CHANNEL_LINK, TELEGRAM_PRIVATE_CHANNEL_LINK,
     FP_MARKETS_LINK, FP_MARKETS_CODE,
     TE_API_KEY, TWELVE_DATA_API_KEY,
     KILLZONES_UTC, TP_LEVELS_PIPS, TP_LOT_PCT,
@@ -40,6 +42,8 @@ from config import (
     MAX_DAILY_LOSS_PCT, MAX_DRAWDOWN_PCT,
     GOLD_IMPACT_EVENTS,
 )
+# Legacy alias
+TELEGRAM_CHANNEL_ID = TELEGRAM_PRIVATE_CHANNEL_ID
 from engine.indicators import add_indicators, detect_fvg_candles, find_swing_points
 from engine.gold_engine import gold_engine_score, detect_choch_realtime, detect_fvg_entry
 from engine.levels import compute_levels, compute_10tp_levels, compute_lot_tiers, compute_trailing_sl
@@ -51,6 +55,8 @@ from academy.lessons import ACADEMY_LESSONS, SIGNAL_MANUAL
 from academy.lessons_zh import SIGNAL_MANUAL_ZH, ACADEMY_LESSONS_ZH
 from academy.calendar import fetch_economic_calendar, get_gold_impact_events, is_high_impact_soon
 from engine.backtester import run_backtest
+from telegram.bot import TelegramBot
+from telegram.notifications import NotificationManager
 
 try:
     from streamlit_autorefresh import st_autorefresh
@@ -201,6 +207,34 @@ def init_state():
         st.session_state.tp_strategy = "split_15_10"
     if "balance" not in st.session_state:
         st.session_state.balance = 10000.0
+
+    # ── Telegram Bot Auto-Start (runs in background thread) ──
+    if "telegram_bot" not in st.session_state:
+        if TELEGRAM_BOT_TOKEN:
+            bot = TelegramBot(
+                bot_token=TELEGRAM_BOT_TOKEN,
+                public_channel_id=TELEGRAM_PUBLIC_CHANNEL_ID,
+                private_channel_id=TELEGRAM_PRIVATE_CHANNEL_ID,
+                admin_ids=ADMIN_TELEGRAM_IDS,
+                fp_link=FP_MARKETS_LINK,
+                fp_code=FP_MARKETS_CODE,
+                public_channel_link=TELEGRAM_PUBLIC_CHANNEL_LINK,
+                private_channel_link=TELEGRAM_PRIVATE_CHANNEL_LINK,
+                data_dir=os.path.join(os.path.dirname(__file__), "data"),
+            )
+            bot.start_polling()
+            st.session_state.telegram_bot = bot
+            logger.info("Telegram bot (Alpha FX Pilot) started automatically")
+        else:
+            st.session_state.telegram_bot = None
+
+    # ── Notification Manager ──
+    if "notifier" not in st.session_state:
+        st.session_state.notifier = NotificationManager(
+            bot_token=TELEGRAM_BOT_TOKEN,
+            private_channel_id=TELEGRAM_PRIVATE_CHANNEL_ID,
+            public_channel_id=TELEGRAM_PUBLIC_CHANNEL_ID,
+        )
 
 init_state()
 
