@@ -171,7 +171,56 @@ class TelegramBot:
         self.data_dir.mkdir(exist_ok=True)
         self.users = self._load_users()
         self._polling = False
-        self._offset = 0
+        self._offset = self._load_offset()
+        self._lock_file = self.data_dir / ".bot_lock"
+        self._offset_file = self.data_dir / ".bot_offset"
+
+    # ═══════════════════════════════════════════════════════════
+    # OFFSET PERSISTENCE — prevents re-processing old messages
+    # ═══════════════════════════════════════════════════════════
+    def _load_offset(self) -> int:
+        """Load last processed offset from file so restarts skip old messages."""
+        offset_file = (Path(self.data_dir) if hasattr(self, 'data_dir') else Path(__file__).parent.parent / "data") / ".bot_offset"
+        try:
+            if offset_file.exists():
+                return int(offset_file.read_text().strip())
+        except Exception:
+            pass
+        return 0
+
+    def _save_offset(self):
+        """Persist current offset to disk."""
+        try:
+            self._offset_file.write_text(str(self._offset))
+        except Exception:
+            pass
+
+    # ═══════════════════════════════════════════════════════════
+    # FILE-BASED LOCK — only ONE polling process at a time
+    # ═══════════════════════════════════════════════════════════
+    def _acquire_lock(self) -> bool:
+        """Try to acquire file lock. Returns True if this is the only poller."""
+        try:
+            import fcntl
+            self._lock_fd = open(self._lock_file, 'w')
+            fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self._lock_fd.write(str(os.getpid()))
+            self._lock_fd.flush()
+            return True
+        except (IOError, OSError):
+            # Another process already holds the lock
+            logger.info("Another bot process already polling — skipping")
+            return False
+
+    def _release_lock(self):
+        """Release the file lock."""
+        try:
+            import fcntl
+            if hasattr(self, '_lock_fd') and self._lock_fd:
+                fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
+                self._lock_fd.close()
+        except Exception:
+            pass
 
     # ═══════════════════════════════════════════════════════════
     # POLLING
@@ -187,8 +236,30 @@ class TelegramBot:
 
     def stop_polling(self):
         self._polling = False
+        self._release_lock()
 
     def _poll_loop(self):
+        # Acquire file lock — if another process is already polling, exit
+        if not self._acquire_lock():
+            self._polling = False
+            return
+
+        # Flush any pending updates on startup so we don't replay old messages
+        try:
+            resp = requests.get(
+                f"{self.base_url}/getUpdates",
+                params={"offset": self._offset, "timeout": 0},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                updates = resp.json().get("result", [])
+                if updates:
+                    self._offset = updates[-1]["update_id"] + 1
+                    self._save_offset()
+                    logger.info(f"Flushed {len(updates)} old updates on startup")
+        except Exception:
+            pass
+
         while self._polling:
             try:
                 resp = requests.get(
@@ -203,11 +274,14 @@ class TelegramBot:
                 updates = resp.json().get("result", [])
                 for update in updates:
                     self._offset = update["update_id"] + 1
+                    self._save_offset()
                     self._handle_update(update)
 
             except Exception as e:
                 logger.error(f"Polling error: {e}")
                 time.sleep(5)
+
+        self._release_lock()
 
     # ═══════════════════════════════════════════════════════════
     # MESSAGE ROUTING
