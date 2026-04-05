@@ -424,8 +424,11 @@ Let's go! \U0001f680
                 "\u2705 <b>Registration complete!</b>\n\n"
                 "Your application is being reviewed.\n"
                 "You'll be notified once approved (usually within a few hours).\n\n"
-                "In the meantime, join our <b>public channel</b> for free gold news and basic strategies:\n"
-                f"\U0001f449 {self.public_channel_link}")
+                "In the meantime:\n\n"
+                "\U0001f4e2 Join our <b>public channel</b> for free gold news and basic strategies:\n"
+                f"\U0001f449 {self.public_channel_link}\n\n"
+                "\U0001f310 Explore our <b>web platform</b> — charts, academy, risk calculator & more:\n"
+                "\U0001f449 https://alpha-fx-app-nwontubrtr6mymaqfdtknx.streamlit.app")
 
             # Notify admins
             self._notify_admins_new_user(chat_id, user)
@@ -435,7 +438,7 @@ Let's go! \U0001f680
                 "\u2705 You're already a member!\n\n"
                 f"\U0001f4e2 Public Channel: {self.public_channel_link}\n"
                 f"\U0001f510 Private Signals: {self.private_channel_link}\n"
-                f"\U0001f310 Website: alpha-fx-hub.streamlit.app\n\n"
+                f"\U0001f310 Website: https://alpha-fx-app-nwontubrtr6mymaqfdtknx.streamlit.app\n\n"
                 "Use /status to check your account. Use /help for commands.")
 
         elif state == STATE_REJECTED:
@@ -640,7 +643,7 @@ Welcome to the Alpha FX family!
 
 \U0001f310 <b>Web Dashboard:</b>
   Full platform with charts, academy, backtest
-  \U0001f449 alpha-fx-hub.streamlit.app
+  \U0001f449 https://alpha-fx-app-nwontubrtr6mymaqfdtknx.streamlit.app
 
 <b>What you'll receive in Alpha FX Edge:</b>
   \u2022 A+ and A grade XAUUSD signals
