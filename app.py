@@ -56,7 +56,8 @@ from academy.lessons import ACADEMY_LESSONS, SIGNAL_MANUAL
 from academy.lessons_zh import SIGNAL_MANUAL_ZH, ACADEMY_LESSONS_ZH
 from academy.calendar import fetch_economic_calendar, get_gold_impact_events, is_high_impact_soon
 from engine.backtester import run_backtest
-from telegram.bot import TelegramBot
+# NOTE: TelegramBot polling runs on Railway (bot_runner.py) — NOT here
+# Only import NotificationManager for sending signals to channels
 from telegram.notifications import NotificationManager
 
 try:
