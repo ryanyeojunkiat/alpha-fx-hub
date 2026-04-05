@@ -264,7 +264,11 @@ class TelegramBot:
             try:
                 resp = requests.get(
                     f"{self.base_url}/getUpdates",
-                    params={"offset": self._offset, "timeout": 30},
+                    params={
+                        "offset": self._offset,
+                        "timeout": 30,
+                        "allowed_updates": json.dumps(["message", "chat_join_request"]),
+                    },
                     timeout=35,
                 )
                 if resp.status_code != 200:
@@ -287,9 +291,14 @@ class TelegramBot:
     # MESSAGE ROUTING
     # ═══════════════════════════════════════════════════════════
     def _handle_update(self, update: dict):
+        # Handle chat join requests (user clicked private channel link)
+        join_req = update.get("chat_join_request")
+        if join_req:
+            self._handle_join_request(join_req)
+            return
+
         msg = update.get("message", {})
         if not msg:
-            # Handle callback queries if we add inline buttons later
             return
 
         chat_id = str(msg["chat"]["id"])
@@ -426,10 +435,13 @@ Let's go! \U0001f680
                 "\u2705 <b>Registration complete!</b>\n\n"
                 "Your application is being reviewed.\n"
                 "You'll be notified once approved (usually within a few hours).\n\n"
-                "In the meantime:\n\n"
-                "\U0001f4e2 Join our <b>public channel</b> for free gold news and basic strategies:\n"
+                "<b>\u261d\ufe0f IMPORTANT — Do this now:</b>\n"
+                f"Click the private channel link below and tap <b>\"Request to Join\"</b>:\n"
+                f"\U0001f449 {self.private_channel_link}\n"
+                "<i>Once approved, you'll be added automatically — no extra steps needed.</i>\n\n"
+                "\U0001f4e2 Also join our <b>public channel</b> for free gold news:\n"
                 f"\U0001f449 {self.public_channel_link}\n\n"
-                "\U0001f310 Explore our <b>web platform</b> — charts, academy, risk calculator & more:\n"
+                "\U0001f310 Explore our <b>web platform</b>:\n"
                 "\U0001f449 https://alpha-fx-app-nwontubrtr6mymaqfdtknx.streamlit.app")
 
             # Notify admins
@@ -627,20 +639,28 @@ Reply: /approve {chat_id} or /reject {chat_id}
         self.users[user_id]["approved_at"] = datetime.now(timezone.utc).isoformat()
         self._save_users()
 
-        # Auto-add user to private channel
-        invite_result = self._create_private_invite(user_id)
-        invite_line = ""
-        if invite_result:
-            invite_line = f"\n\U0001f511 <b>Your personal invite link (click to join):</b>\n  \U0001f449 {invite_result}\n"
+        # Try to directly approve their pending join request first
+        direct_added = self._approve_channel_request(user_id)
+
+        if direct_added:
+            # User was directly added — no link needed
+            channel_line = "\n\u2705 <b>You've been added to Alpha FX Edge Private Channel!</b>\n<i>Check your Telegram chats — you should see it now.</i>\n"
+            admin_note = "directly added to private channel"
         else:
-            invite_line = f"\n\U0001f510 <b>Join Private Channel:</b>\n  \U0001f449 {self.private_channel_link}\n"
+            # No pending join request — send invite link as fallback
+            invite_result = self._create_private_invite(user_id)
+            if invite_result:
+                channel_line = f"\n\U0001f511 <b>Click to join the Private Channel:</b>\n  \U0001f449 {invite_result}\n"
+            else:
+                channel_line = f"\n\U0001f510 <b>Join Private Channel:</b>\n  \U0001f449 {self.private_channel_link}\n"
+            admin_note = "invite link sent (user hadn't clicked channel link yet)"
 
         # Message 1: Approval notification
         self._send(user_id, f"""
 \U0001f389 <b>Congratulations! You've been APPROVED!</b>
 
 Welcome to the Alpha FX family, {self.users[user_id].get('name', 'Trader')}!
-{invite_line}
+{channel_line}
 \U0001f4e2 <b>Public Channel:</b> {self.public_channel_link}
 \U0001f310 <b>Web Platform:</b> https://alpha-fx-app-nwontubrtr6mymaqfdtknx.streamlit.app
 
@@ -651,7 +671,7 @@ Type /guide for our full Getting Started guide.
         time.sleep(1)
         self._send_guide(user_id)
 
-        self._send(admin_id, f"\u2705 User {user_id} ({self.users[user_id].get('name')}) approved.")
+        self._send(admin_id, f"\u2705 User {user_id} ({self.users[user_id].get('name')}) approved — {admin_note}.")
 
     def _cmd_reject(self, admin_id: str, text: str):
         parts = text.split()
@@ -941,8 +961,55 @@ A professional XAUUSD (Gold) trading signal platform powered by a 17-module AI e
     # ═══════════════════════════════════════════════════════════
     # CHANNEL MANAGEMENT
     # ═══════════════════════════════════════════════════════════
+    def _handle_join_request(self, join_req: dict):
+        """Handle when a user clicks the private channel link and requests to join.
+        If already approved, auto-accept. Otherwise, note the pending request."""
+        user = join_req.get("from", {})
+        user_id = str(user.get("id", ""))
+        chat_id = str(join_req.get("chat", {}).get("id", ""))
+        user_name = user.get("first_name", "Unknown")
+
+        logger.info(f"Join request from {user_name} ({user_id}) for chat {chat_id}")
+
+        # If user is already approved, accept them immediately
+        if user_id in self.users and self.users[user_id].get("state") == STATE_APPROVED:
+            success = self._approve_channel_request(user_id)
+            if success:
+                logger.info(f"Auto-approved join request for already-approved user {user_id}")
+                self._send(user_id, "\u2705 You've been added to the private channel! Check your chats.")
+            return
+
+        # Otherwise, mark that they have a pending join request (for when admin approves later)
+        if user_id in self.users:
+            self.users[user_id]["has_join_request"] = True
+            self._save_users()
+            logger.info(f"Stored pending join request for user {user_id}")
+
+    def _approve_channel_request(self, user_id: str) -> bool:
+        """Directly approve a user's pending join request for the private channel.
+        Requires the private channel to have 'Approve New Members' enabled."""
+        if not self.private_channel_id:
+            return False
+        try:
+            resp = requests.post(
+                f"{self.base_url}/approveChatJoinRequest",
+                json={
+                    "chat_id": self.private_channel_id,
+                    "user_id": int(user_id),
+                },
+                timeout=10,
+            )
+            if resp.status_code == 200 and resp.json().get("ok"):
+                logger.info(f"Approved join request for user {user_id} — added to private channel")
+                return True
+            logger.warning(f"approveChatJoinRequest failed for {user_id}: {resp.text}")
+            return False
+        except Exception as e:
+            logger.error(f"Approve join request error: {e}")
+            return False
+
     def _create_private_invite(self, user_id: str) -> Optional[str]:
-        """Create a one-time invite link for the private channel."""
+        """Fallback: create a one-time invite link if direct approval fails."""
         if not self.private_channel_id:
             return None
         try:
@@ -950,7 +1017,7 @@ A professional XAUUSD (Gold) trading signal platform powered by a 17-module AI e
                 f"{self.base_url}/createChatInviteLink",
                 json={
                     "chat_id": self.private_channel_id,
-                    "member_limit": 1,  # One-time use
+                    "member_limit": 1,
                     "creates_join_request": False,
                 },
                 timeout=10,
@@ -959,9 +1026,8 @@ A professional XAUUSD (Gold) trading signal platform powered by a 17-module AI e
                 data = resp.json()
                 if data.get("ok") and data.get("result", {}).get("invite_link"):
                     link = data["result"]["invite_link"]
-                    logger.info(f"Created private invite for user {user_id}: {link}")
+                    logger.info(f"Created fallback invite for user {user_id}: {link}")
                     return link
-            logger.warning(f"Failed to create invite link: {resp.text}")
             return None
         except Exception as e:
             logger.error(f"Create invite error: {e}")
