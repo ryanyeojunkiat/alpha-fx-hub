@@ -79,11 +79,12 @@ class TradeManager:
     Supports selectable TP/SL strategies.
     """
 
-    def __init__(self, strategy: str = "split_15_10", data_dir: str = None):
+    def __init__(self, strategy: str = "split_15_10", data_dir: str = None, cloud_sync=None):
         self.strategy_key = strategy
         self.strategy = STRATEGIES.get(strategy, STRATEGIES["split_15_10"])
         self.active_trades: Dict[str, Trade] = {}
         self.closed_trades: List[Trade] = []
+        self.cloud_sync = cloud_sync  # Optional CloudTradeSync instance
         self.data_dir = Path(data_dir) if data_dir else Path(__file__).parent.parent / "data"
         self.data_dir.mkdir(exist_ok=True)
         self._load_trades()
@@ -263,6 +264,13 @@ class TradeManager:
         self.closed_trades.append(trade)
         del self.active_trades[trade_id]
         self._save_trades()
+
+        # Auto-sync to cloud if available
+        if self.cloud_sync:
+            try:
+                self.cloud_sync.upload_trade(trade.to_dict())
+            except Exception as e:
+                logger.warning(f"Cloud sync failed for {trade_id}: {e}")
 
         logger.info(f"Trade closed: {trade_id}, PnL: ${trade.pnl_usd:.2f} ({trade.pnl_pips} pips)")
         return action

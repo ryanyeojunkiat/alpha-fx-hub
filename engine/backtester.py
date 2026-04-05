@@ -60,8 +60,9 @@ class BacktestTrade:
 
 
 def run_backtest(strategy: str = "split_15_10", months: int = 6,
-                 starting_balance: float = 10000.0, risk_pct: float = 2.0) -> Dict:
-    bt = GoldBacktester(strategy, months, starting_balance, risk_pct)
+                 starting_balance: float = 10000.0, risk_pct: float = 2.0,
+                 days: int = None) -> Dict:
+    bt = GoldBacktester(strategy, months, starting_balance, risk_pct, days=days)
     return bt.run()
 
 
@@ -89,10 +90,11 @@ class GoldBacktester:
         },
     }
 
-    def __init__(self, strategy: str, months: int, starting_balance: float, risk_pct: float):
+    def __init__(self, strategy: str, months: int, starting_balance: float, risk_pct: float, days: int = None):
         self.strategy = strategy
         self.strategy_config = self.STRATEGIES.get(strategy, self.STRATEGIES["split_15_10"])
         self.months = months
+        self._custom_days = days  # Override: if set, use this instead of months * 22
         self.starting_balance = starting_balance
         self.balance = starting_balance
         self.risk_pct = risk_pct
@@ -111,7 +113,8 @@ class GoldBacktester:
     def _generate_price_data(self) -> pd.DataFrame:
         """Generate realistic XAUUSD M15 data with proper market behavior."""
         bars_per_day = 96
-        total_days = self.months * 22
+        total_days = self._custom_days if self._custom_days else self.months * 22
+        total_days = max(1, total_days)  # Minimum 1 day
         total_bars = total_days * bars_per_day
 
         start_time = datetime(2024, 1, 2, 0, 0, tzinfo=timezone.utc)

@@ -11,6 +11,17 @@ env_file = Path(__file__).parent / ".env"
 if env_file.exists():
     load_dotenv(env_file)
 
+# ── Helper: read from Streamlit secrets OR os.environ ────────
+def _get_secret(key: str, default: str = "") -> str:
+    """Try st.secrets first (Streamlit Cloud), then os.environ, then default."""
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets") and key in st.secrets:
+            return str(st.secrets[key])
+    except Exception:
+        pass
+    return os.environ.get(key, default)
+
 # ── Platform Identity ────────────────────────────────────────
 PLATFORM_NAME = "Alpha FX Hub"
 ENGINE_NAME = "Alpha FX Engine"
@@ -19,22 +30,22 @@ VERSION = "1.1.0"
 
 # ── Telegram Configuration ───────────────────────────────────
 # Bot: Alpha FX Pilot @alphaedge_gold_bot
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_BOT_TOKEN = _get_secret("TELEGRAM_BOT_TOKEN")
 TELEGRAM_BOT_USERNAME = "alphaedge_gold_bot"
 
 # Public Channel: Alpha FX Hub (news + basic strategy for everyone)
-TELEGRAM_PUBLIC_CHANNEL_ID = os.environ.get("TELEGRAM_PUBLIC_CHANNEL_ID", "")
+TELEGRAM_PUBLIC_CHANNEL_ID = _get_secret("TELEGRAM_PUBLIC_CHANNEL_ID")
 TELEGRAM_PUBLIC_CHANNEL_LINK = "https://t.me/+CskTnfXWW4s1YWI1"
 
 # Private Channel: Alpha FX Edge (premium signals for subscribers)
-TELEGRAM_PRIVATE_CHANNEL_ID = os.environ.get("TELEGRAM_PRIVATE_CHANNEL_ID", "")
+TELEGRAM_PRIVATE_CHANNEL_ID = _get_secret("TELEGRAM_PRIVATE_CHANNEL_ID")
 TELEGRAM_PRIVATE_CHANNEL_LINK = "https://t.me/+6EFH7b6AJNNjNTQ1"
 
 # Legacy alias (for backward compatibility)
-TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_PRIVATE_CHANNEL_ID", "")
+TELEGRAM_CHANNEL_ID = _get_secret("TELEGRAM_PRIVATE_CHANNEL_ID")
 
 ADMIN_TELEGRAM_IDS = [
-    int(x.strip()) for x in os.environ.get("ADMIN_TELEGRAM_IDS", "").split(",")
+    int(x.strip()) for x in _get_secret("ADMIN_TELEGRAM_IDS").split(",")
     if x.strip().isdigit()
 ]
 
@@ -43,28 +54,28 @@ SUBSCRIPTION_PRICE_USD = 99.0
 IS_FREE_PERIOD = True
 
 # ── MetaAPI (MT5 Connection) ────────────────────────────────
-METAAPI_TOKEN = os.environ.get("METAAPI_TOKEN", "")
-METAAPI_ACCOUNT = os.environ.get("METAAPI_ACCOUNT", "")
+METAAPI_TOKEN = _get_secret("METAAPI_TOKEN")
+METAAPI_ACCOUNT = _get_secret("METAAPI_ACCOUNT")
 
 # ── Supabase ─────────────────────────────────────────────────
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+SUPABASE_URL = _get_secret("SUPABASE_URL")
+SUPABASE_KEY = _get_secret("SUPABASE_KEY")
 
 # ── Trading Economics (Calendar/News) ───────────────────────
-TE_API_KEY = os.environ.get("TE_API_KEY", "")
+TE_API_KEY = _get_secret("TE_API_KEY")
 
 # ── Twelve Data (Price Feed) ────────────────────────────────
-TWELVE_DATA_API_KEY = os.environ.get("TWELVE_DATA_API_KEY", "")
+TWELVE_DATA_API_KEY = _get_secret("TWELVE_DATA_API_KEY")
 
 # ── FP Markets Referral ─────────────────────────────────────
-FP_MARKETS_LINK = os.environ.get(
+FP_MARKETS_LINK = _get_secret(
     "FP_MARKETS_LINK",
     "https://portal.fpmarkets.com/register?fpm-affiliate-utm-source=IB&fpm-affiliate-agt=66209"
 )
-FP_MARKETS_CODE = os.environ.get("FP_MARKETS_CODE", "M4-66209")
+FP_MARKETS_CODE = _get_secret("FP_MARKETS_CODE", "M4-66209")
 
 # ── Scan Settings ────────────────────────────────────────────
-SCAN_INTERVAL = int(os.environ.get("SCAN_INTERVAL_SECONDS", "60"))
+SCAN_INTERVAL = int(_get_secret("SCAN_INTERVAL_SECONDS", "60"))
 
 # ═════════════════════════════════════════════════════════════
 # XAUUSD CONFIGURATION

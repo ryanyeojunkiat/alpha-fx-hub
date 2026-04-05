@@ -37,6 +37,7 @@ from config import (
     TELEGRAM_PUBLIC_CHANNEL_LINK, TELEGRAM_PRIVATE_CHANNEL_LINK,
     FP_MARKETS_LINK, FP_MARKETS_CODE,
     TE_API_KEY, TWELVE_DATA_API_KEY,
+    SUPABASE_URL, SUPABASE_KEY,
     KILLZONES_UTC, TP_LEVELS_PIPS, TP_LOT_PCT,
     GRADE_THRESHOLDS, MODULE_WEIGHTS,
     RISK_CONSERVATIVE_PCT, RISK_MODERATE_PCT, RISK_AGGRESSIVE_PCT,
@@ -59,6 +60,9 @@ from engine.backtester import run_backtest
 # NOTE: TelegramBot polling runs on Railway (bot_runner.py) — NOT here
 # Only import NotificationManager for sending signals to channels
 from telegram.notifications import NotificationManager
+from auth.supabase_auth import SupabaseAuth, render_auth_page
+from trading.cloud_sync import CloudTradeSync
+from engine.adaptive_learner import AdaptiveLearner
 
 try:
     from streamlit_autorefresh import st_autorefresh
@@ -196,11 +200,27 @@ def init_state():
         st.session_state.page = "home"
     if "scanner" not in st.session_state:
         st.session_state.scanner = SignalScanner(balance=10000, api_key=TWELVE_DATA_API_KEY)
+
+    # ── Cloud Sync (trade history to Supabase) ──
+    if "cloud_sync" not in st.session_state:
+        if SUPABASE_URL and SUPABASE_KEY:
+            st.session_state.cloud_sync = CloudTradeSync(SUPABASE_URL, SUPABASE_KEY)
+        else:
+            st.session_state.cloud_sync = None
+
     if "trade_manager" not in st.session_state:
         st.session_state.trade_manager = TradeManager(
             strategy="split_15_10",
+            data_dir=os.path.join(os.path.dirname(__file__), "data"),
+            cloud_sync=st.session_state.cloud_sync,
+        )
+
+    # ── Adaptive Learner ──
+    if "adaptive_learner" not in st.session_state:
+        st.session_state.adaptive_learner = AdaptiveLearner(
             data_dir=os.path.join(os.path.dirname(__file__), "data")
         )
+
     if "risk_manager" not in st.session_state:
         st.session_state.risk_manager = RiskManager(initial_balance=10000)
     if "signals_history" not in st.session_state:
@@ -211,7 +231,7 @@ def init_state():
         st.session_state.balance = 10000.0
 
     # ── Notification Manager (for sending signals to channels) ──
-    # NOTE: Telegram bot polling runs separately via bot_runner.py on Render.com
+    # NOTE: Telegram bot polling runs separately via bot_runner.py on Railway
     if "notifier" not in st.session_state:
         st.session_state.notifier = NotificationManager(
             bot_token=TELEGRAM_BOT_TOKEN,
@@ -221,6 +241,22 @@ def init_state():
     st.session_state.telegram_bot = None
 
 init_state()
+
+# ═════════════════════════════════════════════════════════════
+# AUTHENTICATION GATE
+# ═════════════════════════════════════════════════════════════
+_auth_client = None
+if SUPABASE_URL and SUPABASE_KEY:
+    _auth_client = SupabaseAuth(SUPABASE_URL, SUPABASE_KEY)
+    if not render_auth_page(_auth_client):
+        st.stop()  # Not authenticated — stop here, don't render the app
+
+    # Wire up cloud sync with authenticated user
+    if st.session_state.get("cloud_sync") and st.session_state.get("user"):
+        user_id = st.session_state.user.get("id", "")
+        access_token = st.session_state.get("access_token", "")
+        if user_id:
+            st.session_state.cloud_sync.set_user(user_id, access_token)
 
 
 # ═════════════════════════════════════════════════════════════
@@ -256,6 +292,7 @@ with st.sidebar:
         "scoreboard": ("\U0001f3c6", "Performance Scoreboard"),
         "regime": ("\U0001f30d", "Market Regime"),
         "backtest": ("\U0001f52c", "Backtest Engine"),
+        "ai_insights": ("\U0001f9e0", "AI Learning"),
     }
 
     for key, (icon, label) in pages.items():
@@ -294,6 +331,21 @@ with st.sidebar:
         st.session_state.balance = balance
         st.session_state.scanner.balance = balance
         st.session_state.risk_manager.current_balance = balance
+
+    # ── User Info & Logout ──
+    if st.session_state.get("user"):
+        st.divider()
+        user = st.session_state.user
+        user_email = user.get("email", "User")
+        st.markdown(f"""<div style="color:#9ca3af; font-size:12px;">
+            Logged in as:<br><strong style="color:#7dd3fc;">{user_email}</strong>
+        </div>""", unsafe_allow_html=True)
+        if st.button("Logout", key="logout_btn", use_container_width=True):
+            if _auth_client:
+                _auth_client.sign_out(st.session_state.get("access_token", ""))
+            for k in ["access_token", "refresh_token", "user"]:
+                st.session_state.pop(k, None)
+            st.rerun()
 
 
 # ═════════════════════════════════════════════════════════════
@@ -1137,8 +1189,12 @@ def page_backtest():
                                     format_func=lambda x: "15/10 Split + Trailing" if x == "split_15_10" else "Equal 10%",
                                     key="bt_strategy")
     with col2:
-        bt_months = st.selectbox("Test Period", [3, 6, 9, 12], index=1, key="bt_months",
-                                  format_func=lambda x: f"{x} Months")
+        period_options = {
+            "1 Day": 1, "3 Days": 3, "1 Week": 5, "2 Weeks": 10,
+            "1 Month": 22, "3 Months": 66, "6 Months": 132, "12 Months": 264,
+        }
+        bt_period_label = st.selectbox("Test Period", list(period_options.keys()), index=4, key="bt_period")
+        bt_days = period_options[bt_period_label]
     with col3:
         bt_balance = st.number_input("Starting Balance ($)", value=10000, step=1000, key="bt_balance")
     with col4:
@@ -1150,9 +1206,10 @@ def page_backtest():
             try:
                 results = run_backtest(
                     strategy=bt_strategy,
-                    months=bt_months,
+                    months=1,
                     starting_balance=bt_balance,
                     risk_pct=bt_risk,
+                    days=bt_days,
                 )
                 st.session_state.bt_results = results
             except Exception as e:
@@ -1259,6 +1316,147 @@ def page_backtest():
 
 
 # ═════════════════════════════════════════════════════════════
+# PAGE: AI LEARNING INSIGHTS
+# ═════════════════════════════════════════════════════════════
+def page_ai_insights():
+    st.markdown("""<div class="gold-header">
+        <h1>AI Learning Insights</h1>
+        <div class="subtitle">Adaptive engine that learns from your trade history to improve signals</div>
+    </div>""", unsafe_allow_html=True)
+
+    learner = st.session_state.adaptive_learner
+    cloud = st.session_state.get("cloud_sync")
+    profile = learner.profile
+
+    # ── Refresh / Re-learn Button ──
+    col1, col2 = st.columns([3, 1])
+    with col2:
+        if st.button("Re-Analyze Trades", type="primary", use_container_width=True):
+            # Try cloud first, then fall back to local
+            trades_data = []
+            if cloud:
+                trades_data = cloud.fetch_trades_for_learning(limit=500)
+            if not trades_data:
+                # Fall back to local closed trades
+                trades_data = [t.to_dict() for t in st.session_state.trade_manager.closed_trades]
+            if trades_data:
+                profile = learner.analyze(trades_data)
+                st.success(f"Analyzed {len(trades_data)} trades — insights updated!")
+                st.rerun()
+            else:
+                st.warning("No trade history yet. Complete some trades first!")
+
+    with col1:
+        st.markdown(f"**Trades Analyzed:** {profile.total_trades_analyzed}")
+        if profile.last_updated:
+            st.caption(f"Last updated: {profile.last_updated[:19]}")
+
+    st.divider()
+
+    # ── Key Insights ──
+    if profile.insights:
+        st.markdown("### Key Insights")
+        for insight in profile.insights:
+            # Color-code based on content
+            if any(w in insight.lower() for w in ["strong", "well", "sweet spot", "best"]):
+                st.markdown(f"""<div class="alert-green" style="margin:6px 0; padding:10px 14px;">
+                    {insight}</div>""", unsafe_allow_html=True)
+            elif any(w in insight.lower() for w in ["weak", "underperform", "risky", "avoid", "caution", "hurt"]):
+                st.markdown(f"""<div class="alert-red" style="margin:6px 0; padding:10px 14px;">
+                    {insight}</div>""", unsafe_allow_html=True)
+            else:
+                st.markdown(f"""<div class="alert-yellow" style="margin:6px 0; padding:10px 14px;">
+                    {insight}</div>""", unsafe_allow_html=True)
+    else:
+        st.info("No insights yet — need at least 10 closed trades for the AI to start learning.")
+
+    st.divider()
+
+    # ── Weight Tables ──
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        st.markdown("### Session Performance Weights")
+        session_df = pd.DataFrame([
+            {"Session": k, "Weight": f"{v:.2f}",
+             "Signal": "Boost" if v > 1.1 else ("Reduce" if v < 0.8 else "Normal")}
+            for k, v in profile.session_weights.items()
+        ])
+        st.dataframe(session_df, use_container_width=True, hide_index=True)
+
+        st.markdown("### Day-of-Week Weights")
+        day_df = pd.DataFrame([
+            {"Day": k, "Weight": f"{v:.2f}",
+             "Signal": "Boost" if v > 1.1 else ("Reduce" if v < 0.8 else "Normal")}
+            for k, v in profile.day_weights.items()
+        ])
+        st.dataframe(day_df, use_container_width=True, hide_index=True)
+
+    with col_b:
+        st.markdown("### Grade Weights")
+        grade_df = pd.DataFrame([
+            {"Grade": k, "Weight": f"{v:.2f}",
+             "Signal": "Boost" if v > 1.1 else ("Reduce" if v < 0.8 else "Normal")}
+            for k, v in profile.grade_weights.items()
+        ])
+        st.dataframe(grade_df, use_container_width=True, hide_index=True)
+
+        st.markdown("### Trend Alignment")
+        trend_df = pd.DataFrame([
+            {"Trend": k, "Weight": f"{v:.2f}",
+             "Signal": "Boost" if v > 1.1 else ("Reduce" if v < 0.8 else "Normal")}
+            for k, v in profile.trend_weights.items()
+        ])
+        st.dataframe(trend_df, use_container_width=True, hide_index=True)
+
+        st.markdown("### Volatility Regime")
+        vol_df = pd.DataFrame([
+            {"Regime": k, "Weight": f"{v:.2f}",
+             "Signal": "Boost" if v > 1.1 else ("Reduce" if v < 0.8 else "Normal")}
+            for k, v in profile.volatility_weights.items()
+        ])
+        st.dataframe(vol_df, use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # ── Optimal Indicator Ranges ──
+    st.markdown("### Optimal Indicator Ranges (from winning trades)")
+    ind_col1, ind_col2, ind_col3 = st.columns(3)
+    with ind_col1:
+        st.metric("RSI Sweet Spot", f"{profile.optimal_rsi_range[0]:.0f} - {profile.optimal_rsi_range[1]:.0f}")
+    with ind_col2:
+        st.metric("Min ADX", f"{profile.optimal_adx_min:.0f}")
+    with ind_col3:
+        st.metric("Best Strategy", profile.best_strategy)
+
+    # ── Cloud Sync Status ──
+    st.divider()
+    st.markdown("### Cloud Sync Status")
+    if cloud and st.session_state.get("user"):
+        st.success("Connected to Supabase — trades auto-sync to cloud")
+        sync_col1, sync_col2 = st.columns(2)
+        with sync_col1:
+            if st.button("Sync All Local Trades to Cloud"):
+                local_trades = [t.to_dict() for t in st.session_state.trade_manager.closed_trades]
+                if local_trades:
+                    count = cloud.upload_trades_batch(local_trades)
+                    st.success(f"Synced {count} trades to cloud!")
+                else:
+                    st.info("No local trades to sync.")
+        with sync_col2:
+            if st.button("Load Trades from Cloud"):
+                cloud_trades = cloud.fetch_trades(limit=200)
+                st.info(f"Found {len(cloud_trades)} trades in cloud.")
+    else:
+        st.warning("Cloud sync not connected — trades saved locally only. Log in to enable cloud sync.")
+
+    # ── SQL Setup Helper ──
+    with st.expander("Supabase Setup (run once in SQL Editor)"):
+        st.code(CloudTradeSync.ensure_table_sql(None), language="sql")
+        st.caption("Copy this SQL and run it in your Supabase Dashboard > SQL Editor to create the trade_history table.")
+
+
+# ═════════════════════════════════════════════════════════════
 # PAGE ROUTER
 # ═════════════════════════════════════════════════════════════
 PAGE_MAP = {
@@ -1272,6 +1470,7 @@ PAGE_MAP = {
     "scoreboard": page_scoreboard,
     "regime": page_regime,
     "backtest": page_backtest,
+    "ai_insights": page_ai_insights,
 }
 
 # Route to current page
