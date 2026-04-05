@@ -326,6 +326,8 @@ class TelegramBot:
             self._cmd_status(chat_id)
         elif text == "/help":
             self._cmd_help(chat_id)
+        elif text == "/guide":
+            self._cmd_guide(chat_id)
         else:
             self._process_onboarding(chat_id, text, user_name, username)
 
@@ -633,36 +635,22 @@ Reply: /approve {chat_id} or /reject {chat_id}
         else:
             invite_line = f"\n\U0001f510 <b>Join Private Channel:</b>\n  \U0001f449 {self.private_channel_link}\n"
 
-        # Send approval message with both channel links
+        # Message 1: Approval notification
         self._send(user_id, f"""
 \U0001f389 <b>Congratulations! You've been APPROVED!</b>
 
-Welcome to the Alpha FX family!
-
-\u2705 <b>Your Access:</b>
-
-\U0001f4e2 <b>Public Channel (Alpha FX Hub):</b>
-  Gold news, basic strategies, market updates
-  \U0001f449 {self.public_channel_link}
+Welcome to the Alpha FX family, {self.users[user_id].get('name', 'Trader')}!
 {invite_line}
-\U0001f310 <b>Web Dashboard:</b>
-  Full platform with charts, academy, backtest
-  \U0001f449 https://alpha-fx-app-nwontubrtr6mymaqfdtknx.streamlit.app
+\U0001f4e2 <b>Public Channel:</b> {self.public_channel_link}
+\U0001f310 <b>Web Platform:</b> https://alpha-fx-app-nwontubrtr6mymaqfdtknx.streamlit.app
 
-\U0001f4f1 <b>MT5 Broker Setup:</b>
-  Download MetaTrader 5, search broker:
-  <b>First Prudential Markets Limited - SC Live</b>
-  Use our referral code: <b>{self.fp_code}</b>
-
-<b>What you'll receive in Alpha FX Edge:</b>
-  \u2022 A+ and A grade XAUUSD signals
-  \u2022 10 TP levels with partial close alerts
-  \u2022 RED/YELLOW CHoCH structure alerts
-  \u2022 FVG second-wave entry opportunities
-  \u2022 Daily performance summaries
-
-Trade smart. Trade gold. \U0001f947
+Type /guide for our full Getting Started guide.
 """.strip())
+
+        # Message 2: Full Getting Started guide (auto-sent)
+        time.sleep(1)
+        self._send_guide(user_id)
+
         self._send(admin_id, f"\u2705 User {user_id} ({self.users[user_id].get('name')}) approved.")
 
     def _cmd_reject(self, admin_id: str, text: str):
@@ -791,6 +779,7 @@ Total users: {total}
 \u2753 <b>Alpha FX Pilot Commands</b>
 
 /start — Begin registration
+/guide — How to use Alpha FX Hub (full guide)
 /status — Check your account status
 /help — Show this help message
 """
@@ -805,6 +794,107 @@ Total users: {total}
 /news <message> — Post news to public channel
 """
         self._send(chat_id, msg.strip())
+
+    def _cmd_guide(self, chat_id: str):
+        """Send the full platform guide."""
+        user = self.users.get(chat_id, {})
+        if user.get("state") != STATE_APPROVED:
+            self._send(chat_id, "Complete your registration first. Send /start to begin.")
+            return
+        self._send_guide(chat_id)
+
+    def _send_guide(self, chat_id: str):
+        """Send the comprehensive Getting Started guide (3 messages)."""
+
+        # Part 1: Platform Overview
+        self._send(chat_id, """
+\U0001f4d6 <b>GETTING STARTED — ALPHA FX HUB</b>
+\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
+
+\U0001f3af <b>What is Alpha FX Hub?</b>
+A professional XAUUSD (Gold) trading signal platform powered by a 17-module AI engine. We analyze gold across multiple timeframes and deliver high-probability trade signals.
+
+\U0001f4cd <b>Our Platform has 2 parts:</b>
+
+<b>1\ufe0f\u20e3 Telegram Channels</b> (you're here!)
+  \u2022 <b>Alpha FX Hub</b> (Public) — Gold news, market updates, economic calendar
+  \u2022 <b>Alpha FX Edge</b> (Private) — LIVE trade signals ONLY
+
+<b>2\ufe0f\u20e3 Website Dashboard</b>
+  \u2022 Signal Dashboard with annotated charts
+  \u2022 Trading Academy (beginner to advanced)
+  \u2022 Risk Calculator & Position Sizer
+  \u2022 Live Trade Tracker
+  \u2022 Economic Calendar with gold impact analysis
+  \u2022 Market Regime Indicator
+  \U0001f449 https://alpha-fx-app-nwontubrtr6mymaqfdtknx.streamlit.app
+""".strip())
+
+        time.sleep(1)
+
+        # Part 2: How Signals Work
+        self._send(chat_id, f"""
+\U0001f4e1 <b>HOW OUR SIGNALS WORK</b>
+\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
+
+\u26a0\ufe0f <b>IMPORTANT:</b> Alpha FX Edge (Private Channel) is for <b>LIVE SIGNAL NOTIFICATIONS ONLY</b>. No chatting — just signals. For details, strategy, and learning, use the website.
+
+<b>When a signal fires, you'll see:</b>
+  \U0001f7e2 BUY or \U0001f534 SELL direction
+  \u2b50 Grade (A+ = best, A = strong, B = decent)
+  \U0001f3af Entry Price
+  \U0001f6d1 Stop Loss
+  \U0001f4b0 10 Take Profit levels (TP1-TP10)
+
+<b>How to trade our signals:</b>
+  1\ufe0f\u20e3 Open MT5 when you see a signal
+  2\ufe0f\u20e3 Enter at the <b>Entry Price</b> shown
+  3\ufe0f\u20e3 Set your <b>Stop Loss</b> immediately
+  4\ufe0f\u20e3 Set TP1 as your first target
+  5\ufe0f\u20e3 Close 30% at TP1, 20% at TP2
+  6\ufe0f\u20e3 Move SL to breakeven after TP1 hits
+  7\ufe0f\u20e3 Let the rest ride with trailing SL
+
+\U0001f4a1 <b>Use our Risk Calculator on the website to calculate your exact lot size before every trade!</b>
+""".strip())
+
+        time.sleep(1)
+
+        # Part 3: MT5 Setup + Quick Links
+        self._send(chat_id, f"""
+\U0001f4f1 <b>MT5 BROKER SETUP</b>
+\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
+
+<b>Step 1:</b> Download MetaTrader 5 (MT5)
+  \u2022 iPhone: App Store \u2192 "MetaTrader 5"
+  \u2022 Android: Play Store \u2192 "MetaTrader 5"
+  \u2022 PC: mt5.com/en/download
+
+<b>Step 2:</b> Open MT5 and search for broker:
+  \U0001f50d <b>First Prudential Markets Limited - SC Live</b>
+
+<b>Step 3:</b> Log in with your FP Markets account
+  (If you haven't registered yet, use our link):
+  \U0001f449 {self.fp_link}
+  Referral code: <code>{self.fp_code}</code>
+
+<b>Step 4:</b> Find <b>XAUUSD</b> in Market Watch
+  Long press \u2192 New Order \u2192 Enter trade details
+
+\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
+
+\U0001f517 <b>QUICK LINKS:</b>
+  \U0001f310 Website: https://alpha-fx-app-nwontubrtr6mymaqfdtknx.streamlit.app
+  \U0001f4e2 Public Channel: {self.public_channel_link}
+  \U0001f510 Private Signals: {self.private_channel_link}
+
+\U0001f4ac <b>Commands:</b>
+  /guide — See this guide again
+  /status — Check your membership status
+  /help — All available commands
+
+\U0001f947 Trade smart. Protect your capital. Let's grow together!
+""".strip())
 
     # ═══════════════════════════════════════════════════════════
     # CHANNEL POSTING
