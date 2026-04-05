@@ -625,6 +625,14 @@ Reply: /approve {chat_id} or /reject {chat_id}
         self.users[user_id]["approved_at"] = datetime.now(timezone.utc).isoformat()
         self._save_users()
 
+        # Auto-add user to private channel
+        invite_result = self._create_private_invite(user_id)
+        invite_line = ""
+        if invite_result:
+            invite_line = f"\n\U0001f511 <b>Your personal invite link (click to join):</b>\n  \U0001f449 {invite_result}\n"
+        else:
+            invite_line = f"\n\U0001f510 <b>Join Private Channel:</b>\n  \U0001f449 {self.private_channel_link}\n"
+
         # Send approval message with both channel links
         self._send(user_id, f"""
 \U0001f389 <b>Congratulations! You've been APPROVED!</b>
@@ -636,14 +644,15 @@ Welcome to the Alpha FX family!
 \U0001f4e2 <b>Public Channel (Alpha FX Hub):</b>
   Gold news, basic strategies, market updates
   \U0001f449 {self.public_channel_link}
-
-\U0001f510 <b>Private Channel (Alpha FX Edge):</b>
-  Premium signals, TP alerts, CHoCH warnings
-  \U0001f449 {self.private_channel_link}
-
+{invite_line}
 \U0001f310 <b>Web Dashboard:</b>
   Full platform with charts, academy, backtest
   \U0001f449 https://alpha-fx-app-nwontubrtr6mymaqfdtknx.streamlit.app
+
+\U0001f4f1 <b>MT5 Broker Setup:</b>
+  Download MetaTrader 5, search broker:
+  <b>First Prudential Markets Limited - SC Live</b>
+  Use our referral code: <b>{self.fp_code}</b>
 
 <b>What you'll receive in Alpha FX Edge:</b>
   \u2022 A+ and A grade XAUUSD signals
@@ -838,6 +847,35 @@ Total users: {total}
         """Post a trading strategy tip to the public channel."""
         msg = f"\U0001f4a1 <b>Gold Trading Tip</b>\n\n{tip}\n\n<i>— Alpha FX Hub Academy</i>"
         return self.post_to_public(msg)
+
+    # ═══════════════════════════════════════════════════════════
+    # CHANNEL MANAGEMENT
+    # ═══════════════════════════════════════════════════════════
+    def _create_private_invite(self, user_id: str) -> Optional[str]:
+        """Create a one-time invite link for the private channel."""
+        if not self.private_channel_id:
+            return None
+        try:
+            resp = requests.post(
+                f"{self.base_url}/createChatInviteLink",
+                json={
+                    "chat_id": self.private_channel_id,
+                    "member_limit": 1,  # One-time use
+                    "creates_join_request": False,
+                },
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("ok") and data.get("result", {}).get("invite_link"):
+                    link = data["result"]["invite_link"]
+                    logger.info(f"Created private invite for user {user_id}: {link}")
+                    return link
+            logger.warning(f"Failed to create invite link: {resp.text}")
+            return None
+        except Exception as e:
+            logger.error(f"Create invite error: {e}")
+            return None
 
     # ═══════════════════════════════════════════════════════════
     # HELPERS

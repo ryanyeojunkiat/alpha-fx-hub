@@ -433,6 +433,128 @@ Forecast: <b>{event.get('forecast', 'N/A')}</b> | Previous: <b>{event.get('previ
     return msg
 
 
+def build_weekend_prediction(price_data: dict, events: list, td_api_key: str = "") -> str:
+    """Build a weekend prediction signal for Monday market open."""
+    now = datetime.now(timezone.utc)
+
+    lines = ["\U0001f52e <b>WEEKEND ANALYSIS — MONDAY OPEN PREDICTION</b>"]
+    lines.append(f"\U0001f552 {now.strftime('%a %d %b %Y | %H:%M UTC')}")
+    lines.append("")
+
+    # Last known price
+    price = price_data.get("current", 0)
+    if price:
+        lines.append(f"\U0001f4b0 <b>Friday Close:</b> ${price:.2f}")
+
+    # S/R levels
+    r2 = price_data.get("r2", 0)
+    r1 = price_data.get("r1", 0)
+    pivot = price_data.get("pivot", 0)
+    s1 = price_data.get("s1", 0)
+    s2 = price_data.get("s2", 0)
+
+    if pivot:
+        lines.append("")
+        lines.append("\U0001f4ca <b>KEY LEVELS FOR MONDAY:</b>")
+        lines.append(f"  R2: ${r2:.2f}")
+        lines.append(f"  R1: ${r1:.2f}")
+        lines.append(f"  Pivot: ${pivot:.2f}")
+        lines.append(f"  S1: ${s1:.2f}")
+        lines.append(f"  S2: ${s2:.2f}")
+
+    # Trend analysis
+    trend = price_data.get("trend", "")
+    atr = price_data.get("atr", 0)
+    high_24h = price_data.get("high_24h", 0)
+    low_24h = price_data.get("low_24h", 0)
+
+    lines.append("")
+    lines.append("\U0001f4c8 <b>TECHNICAL OUTLOOK:</b>")
+    if trend:
+        lines.append(f"  Trend: <b>{trend.upper()}</b>")
+    if atr:
+        lines.append(f"  ATR(14): ${atr:.2f}")
+    if high_24h and low_24h:
+        lines.append(f"  Friday Range: ${low_24h:.2f} — ${high_24h:.2f}")
+
+    # Bias calculation
+    bias = "NEUTRAL"
+    reasoning = []
+    if price and pivot:
+        if price > pivot:
+            reasoning.append("Price above pivot = bullish bias")
+            bias = "BULLISH"
+        else:
+            reasoning.append("Price below pivot = bearish bias")
+            bias = "BEARISH"
+
+    if trend:
+        if "bullish" in trend.lower():
+            reasoning.append("Overall trend is bullish")
+            if bias != "BEARISH":
+                bias = "BULLISH"
+        elif "bearish" in trend.lower():
+            reasoning.append("Overall trend is bearish")
+            if bias != "BULLISH":
+                bias = "BEARISH"
+
+    bias_emoji = "\U0001f7e2" if bias == "BULLISH" else "\U0001f534" if bias == "BEARISH" else "\U0001f7e1"
+    lines.append("")
+    lines.append(f"{bias_emoji} <b>MONDAY BIAS: {bias}</b>")
+    for r in reasoning:
+        lines.append(f"  \u2022 {r}")
+
+    # Scenario planning
+    lines.append("")
+    lines.append("\U0001f3af <b>SCENARIOS FOR MONDAY:</b>")
+    if price and atr:
+        bull_target = price + atr * 1.5
+        bear_target = price - atr * 1.5
+        if bias == "BULLISH":
+            lines.append(f"  \U0001f7e2 Bullish: Gap up → target R1 (${r1:.2f}) then R2 (${r2:.2f})")
+            lines.append(f"  \U0001f534 Risk: If breaks below ${s1:.2f}, bears take control → ${s2:.2f}")
+            lines.append(f"  \U0001f4a1 <b>Plan:</b> Look for BUY entries at ${pivot:.2f}-${s1:.2f} zone")
+        elif bias == "BEARISH":
+            lines.append(f"  \U0001f534 Bearish: Gap down → target S1 (${s1:.2f}) then S2 (${s2:.2f})")
+            lines.append(f"  \U0001f7e2 Risk: If breaks above ${r1:.2f}, bulls take control → ${r2:.2f}")
+            lines.append(f"  \U0001f4a1 <b>Plan:</b> Look for SELL entries at ${pivot:.2f}-${r1:.2f} zone")
+        else:
+            lines.append(f"  Watch ${r1:.2f} (resistance) and ${s1:.2f} (support) for direction")
+            lines.append(f"  \U0001f4a1 <b>Plan:</b> Wait for clear breakout before entering")
+
+    # Upcoming week events
+    gold_events = get_gold_impact_events(events)
+    week_events = []
+    for evt in gold_events:
+        try:
+            evt_time = datetime.fromisoformat(evt["time"].replace("Z", "+00:00"))
+            if now < evt_time < now + timedelta(days=7) and evt["importance"] >= 2:
+                week_events.append(evt)
+        except (ValueError, TypeError):
+            continue
+
+    if week_events:
+        lines.append("")
+        lines.append("\U0001f4c5 <b>KEY EVENTS THIS WEEK:</b>")
+        for evt in week_events[:8]:
+            try:
+                evt_time = datetime.fromisoformat(evt["time"].replace("Z", "+00:00"))
+                day_name = evt_time.strftime("%a %d %b")
+                time_str = evt_time.strftime("%H:%M UTC")
+            except Exception:
+                day_name = "TBD"
+                time_str = ""
+            stars = _importance_stars(evt["importance"])
+            lines.append(f"  {stars} {evt['event']} — {day_name} {time_str}")
+
+    lines.append("")
+    lines.append("\u26a0\ufe0f <b>Risk Warning:</b> Weekend gaps can be significant. Use pending orders with proper SL.")
+    lines.append("")
+    lines.append("\U0001f4ca <b>Alpha FX Hub</b> | Weekend Analysis")
+
+    return "\n".join(lines)
+
+
 class NewsPoster:
     """Runs in background thread, posts gold news every hour."""
 
@@ -445,6 +567,7 @@ class NewsPoster:
         self.alert_check_interval = 300   # Check every 5 min
         self._running = False
         self._alerted_events = set()
+        self._weekend_posted = False
 
     def start(self):
         if self._running:
@@ -457,7 +580,10 @@ class NewsPoster:
         t2 = threading.Thread(target=self._alert_loop, daemon=True)
         t2.start()
 
-        logger.info(f"News poster started — hourly updates + 5-min event alerts")
+        t3 = threading.Thread(target=self._weekend_loop, daemon=True)
+        t3.start()
+
+        logger.info(f"News poster started — hourly updates + 5-min event alerts + weekend predictions")
 
     def stop(self):
         self._running = False
@@ -546,3 +672,35 @@ class NewsPoster:
                 logger.error(f"Alert loop error: {e}")
 
             time.sleep(self.alert_check_interval)
+
+    def _weekend_loop(self):
+        """Post weekend prediction on Saturday morning (once per weekend)."""
+        time.sleep(120)  # Wait 2 min before first check
+
+        while self._running:
+            try:
+                now = datetime.now(timezone.utc)
+                # Post on Saturday between 6-10 UTC (once)
+                is_saturday = now.weekday() == 5  # 5 = Saturday
+                is_morning = 6 <= now.hour <= 10
+
+                if is_saturday and is_morning and not self._weekend_posted:
+                    events = fetch_economic_calendar(api_key=self.te_api_key)
+                    price_data = self._get_price_data()
+
+                    if price_data:
+                        msg = build_weekend_prediction(price_data, events, self.td_api_key)
+                        # Post to PRIVATE channel (premium content)
+                        success = self.notifier.broadcast(msg)
+                        if success:
+                            self._weekend_posted = True
+                            logger.info("Weekend prediction posted to private channel")
+
+                # Reset flag on Monday
+                if now.weekday() == 0:  # Monday
+                    self._weekend_posted = False
+
+            except Exception as e:
+                logger.error(f"Weekend prediction error: {e}")
+
+            time.sleep(1800)  # Check every 30 min

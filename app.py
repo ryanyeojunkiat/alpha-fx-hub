@@ -49,7 +49,7 @@ TELEGRAM_CHANNEL_ID = TELEGRAM_PRIVATE_CHANNEL_ID
 from engine.indicators import add_indicators, detect_fvg_candles, find_swing_points
 from engine.gold_engine import gold_engine_score, detect_choch_realtime, detect_fvg_entry
 from engine.levels import compute_levels, compute_10tp_levels, compute_lot_tiers, compute_trailing_sl
-from engine.data import fetch_bars, fetch_price
+from engine.data import fetch_bars, fetch_price, fetch_metaapi_price, get_metaapi_account_info
 from engine.signal_scanner import SignalScanner, Signal
 from trading.trade_manager import TradeManager, Trade, STRATEGIES
 from trading.risk_manager import RiskManager
@@ -521,11 +521,17 @@ def page_home():
     # Live overview
     overview = st.session_state.scanner.get_market_overview()
 
+    # Try MetaAPI live price first
+    mt5_price = fetch_metaapi_price()
+    price_source = "MT5 LIVE" if mt5_price else "DELAYED"
+    display_price = mt5_price if mt5_price else overview.get('price', 0)
+    source_color = "#10b981" if mt5_price else "#f59e0b"
+
     col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
         st.markdown(f"""<div class="metric-card">
-            <div class="label">Gold Price</div>
-            <div class="value">${overview.get('price', 0):,.2f}</div>
+            <div class="label">Gold Price <span style="color:{source_color}; font-size:9px;">● {price_source}</span></div>
+            <div class="value">${display_price:,.2f}</div>
         </div>""", unsafe_allow_html=True)
     with col2:
         bias = overview.get("bias", "NEUTRAL")
@@ -1178,6 +1184,18 @@ def page_regime():
 # PAGE: BACKTEST ENGINE
 # ═════════════════════════════════════════════════════════════
 def page_backtest():
+    # Restrict to creator only
+    CREATOR_EMAIL = "junkiatyeo96@gmail.com"
+    user_email = st.session_state.get("user", {}).get("email", "")
+    if user_email.lower() != CREATOR_EMAIL.lower():
+        st.markdown("""<div class="gold-header">
+            <h1>\U0001f52c Backtest Engine</h1>
+            <div class="subtitle">Admin-only feature</div>
+        </div>""", unsafe_allow_html=True)
+        st.warning("The Backtest Engine is restricted to the platform administrator. "
+                   "Contact the Alpha FX Hub team for access.")
+        return
+
     st.markdown("""<div class="gold-header">
         <h1>\U0001f52c Backtest Engine</h1>
         <div class="subtitle">Test our strategy against historical gold data</div>
@@ -1319,6 +1337,17 @@ def page_backtest():
 # PAGE: AI LEARNING INSIGHTS
 # ═════════════════════════════════════════════════════════════
 def page_ai_insights():
+    # Restrict to creator only
+    CREATOR_EMAIL = "junkiatyeo96@gmail.com"
+    user_email = st.session_state.get("user", {}).get("email", "")
+    if user_email.lower() != CREATOR_EMAIL.lower():
+        st.markdown("""<div class="gold-header">
+            <h1>AI Learning Insights</h1>
+            <div class="subtitle">Admin-only feature</div>
+        </div>""", unsafe_allow_html=True)
+        st.warning("AI Learning Insights is restricted to the platform administrator.")
+        return
+
     st.markdown("""<div class="gold-header">
         <h1>AI Learning Insights</h1>
         <div class="subtitle">Adaptive engine that learns from your trade history to improve signals</div>
