@@ -33,6 +33,8 @@ if env_file.exists():
     load_dotenv(env_file)
 
 from telegram.bot import TelegramBot
+from telegram.notifications import NotificationManager
+from telegram.news_poster import NewsPoster
 
 # ── Logging ──
 logging.basicConfig(
@@ -54,6 +56,7 @@ FP_LINK = os.environ.get(
     "https://portal.fpmarkets.com/register?fpm-affiliate-utm-source=IB&fpm-affiliate-agt=66209"
 )
 FP_CODE = os.environ.get("FP_MARKETS_CODE", "M4-66209")
+TE_API_KEY = os.environ.get("TE_API_KEY", "")
 PUBLIC_LINK = "https://t.me/+CskTnfXWW4s1YWI1"
 PRIVATE_LINK = "https://t.me/+6EFH7b6AJNNjNTQ1"
 
@@ -127,18 +130,35 @@ def main():
         data_dir=data_dir,
     )
 
+    # ── News Poster: auto-posts to public channel every 2 hours ──
+    notifier = NotificationManager(
+        bot_token=BOT_TOKEN,
+        private_channel_id=PRIVATE_CHANNEL_ID,
+        public_channel_id=PUBLIC_CHANNEL_ID,
+    )
+    news_poster = NewsPoster(
+        notifier=notifier,
+        te_api_key=TE_API_KEY,
+        interval_seconds=7200,  # Every 2 hours
+    )
+
     # Graceful shutdown
     def shutdown(signum, frame):
         logger.info("Shutting down bot...")
         bot.stop_polling()
+        news_poster.stop()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
-    # Start polling (this runs in a background thread)
+    # Start bot polling (background thread)
     bot.start_polling()
-    logger.info("Bot is running. Press Ctrl+C to stop.")
+    logger.info("Bot is running.")
+
+    # Start news poster (background thread)
+    news_poster.start()
+    logger.info("News poster is running — updates every 2 hours.")
 
     # Keep main thread alive
     while True:
