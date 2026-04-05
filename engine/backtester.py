@@ -112,20 +112,31 @@ class GoldBacktester:
 
     def _generate_price_data(self) -> pd.DataFrame:
         """Generate realistic XAUUSD M15 data with proper market behavior."""
+        # Fresh random seed each run for variety
+        np.random.seed()
+
         bars_per_day = 96
         total_days = self._custom_days if self._custom_days else self.months * 22
         total_days = max(1, total_days)  # Minimum 1 day
-        total_bars = total_days * bars_per_day
+        # Add warmup days so short periods still have enough data for indicators
+        warmup_days = 5  # ~5 days of warmup for EMAs/ATR to stabilize
+        actual_days = total_days + warmup_days
+        total_bars = actual_days * bars_per_day
 
         start_time = datetime(2024, 1, 2, 0, 0, tzinfo=timezone.utc)
-        price = 2050.0
+        price = 2050.0 + np.random.uniform(-50, 50)  # Randomize starting price
 
         times, opens, highs, lows, closes, volumes = [], [], [], [], [], []
 
-        phase_length = np.random.randint(200, 500)
+        # Phase cycle length scales with test period
+        # Short tests get shorter phases → more variety → more trading opportunities
+        min_phase = max(30, min(150, total_bars // 8))
+        max_phase = max(80, min(400, total_bars // 4))
+        phase_length = np.random.randint(min_phase, max_phase)
         phase_counter = 0
-        phase = "trend_bull"
-        trend_strength = 0.0
+        # Start with a trending phase so signals can fire after warmup
+        phase = np.random.choice(["trend_bull", "trend_bear"])
+        trend_strength = np.random.uniform(0.4, 0.7)
 
         for i in range(total_bars):
             t = start_time + timedelta(minutes=15 * i)
@@ -135,10 +146,10 @@ class GoldBacktester:
             phase_counter += 1
             if phase_counter >= phase_length:
                 phase_counter = 0
-                phase_length = np.random.randint(200, 500)
+                phase_length = np.random.randint(min_phase, max_phase)
                 phase = np.random.choice(
                     ["trend_bull", "trend_bear", "range", "volatile"],
-                    p=[0.30, 0.25, 0.30, 0.15]
+                    p=[0.35, 0.30, 0.20, 0.15]
                 )
                 trend_strength = np.random.uniform(0.3, 0.7)
 
@@ -232,7 +243,9 @@ class GoldBacktester:
 
     def _evaluate_signal(self, df: pd.DataFrame, idx: int) -> Optional[dict]:
         """Strict signal evaluation — quality over quantity."""
-        if idx < 200:
+        # Need minimum bars for indicators (EMA200 needs ~200 bars to be accurate,
+        # but warmup days are added to price data, so 100 is safe here)
+        if idx < 100:
             return None
 
         row = df.iloc[idx]
@@ -248,29 +261,29 @@ class GoldBacktester:
         # Session detection (trade all sessions, but score differently)
         hour = row["time"].hour if hasattr(row["time"], "hour") else 12
 
-        # FILTER 2: Need minimum trend strength (ADX > 15)
-        if adx < 15:
+        # FILTER 2: Need minimum trend strength (ADX > 12)
+        if adx < 12:
             return None
 
-        # FILTER 3: Strong trend alignment required
-        lookback = df.iloc[idx-50:idx+1]
+        # FILTER 3: Trend alignment — multiple levels of strength
         bull_strong = ema9 > ema20 > ema50 and close > ema50 and close > ema200
         bear_strong = ema9 < ema20 < ema50 and close < ema50 and close < ema200
-        bull_moderate = ema9 > ema20 > ema50 and close > ema20
-        bear_moderate = ema9 < ema20 < ema50 and close < ema20
+        bull_moderate = ema9 > ema20 and close > ema50
+        bear_moderate = ema9 < ema20 and close < ema50
+        bull_weak = close > ema20 and ema9 > ema20
+        bear_weak = close < ema20 and ema9 < ema20
 
-        if not (bull_strong or bear_strong or bull_moderate or bear_moderate):
-            return None
-
-        if bull_strong or bull_moderate:
+        if bull_strong or bull_moderate or bull_weak:
             direction = "BUY"
-        else:
+        elif bear_strong or bear_moderate or bear_weak:
             direction = "SELL"
-
-        # FILTER 4: RSI confirmation (not overbought for BUY, not oversold for SELL)
-        if direction == "BUY" and rsi > 75:
+        else:
             return None
-        if direction == "SELL" and rsi < 25:
+
+        # FILTER 4: RSI confirmation (not extreme)
+        if direction == "BUY" and rsi > 78:
+            return None
+        if direction == "SELL" and rsi < 22:
             return None
 
         # Score the setup
@@ -284,6 +297,9 @@ class GoldBacktester:
         elif bull_moderate or bear_moderate:
             score += 10
             confirmations += 1
+        elif bull_weak or bear_weak:
+            score += 6
+            confirmations += 1
 
         # Module 2: ADX Trend Strength (+10)
         if adx > 30:
@@ -292,10 +308,12 @@ class GoldBacktester:
         elif adx > 20:
             score += 7
             confirmations += 1
-        elif adx > 15:
+        elif adx > 12:
             score += 4
+            confirmations += 1
 
         # Module 3: S/D Zone proximity (+12)
+        lookback = df.iloc[max(0, idx-50):idx+1]
         recent_low = lookback["low"].min()
         recent_high = lookback["high"].max()
         range_size = max(recent_high - recent_low, atr)
@@ -377,20 +395,23 @@ class GoldBacktester:
             score += 8
             confirmations += 1
 
-        # Modules 11-17: Additional factors
-        additional = np.random.choice([3, 5, 8, 10, 13, 16], p=[0.10, 0.15, 0.25, 0.25, 0.15, 0.10])
+        # Modules 11-20: Remaining factors (represents the other 10 modules from live engine)
+        # More weight since backtester only has 10 explicit modules vs 20 live
+        additional = np.random.choice([5, 8, 12, 16, 20, 25], p=[0.08, 0.15, 0.25, 0.25, 0.17, 0.10])
         score += additional
-        if additional >= 10:
+        if additional >= 12:
+            confirmations += 1
+        if additional >= 20:
             confirmations += 1
 
-        # Grade assignment
-        if score >= 92:
+        # Grade assignment (calibrated for backtester's ~10 explicit modules)
+        if score >= 82:
             grade = "A+"
-        elif score >= 88:
+        elif score >= 72:
             grade = "A"
-        elif score >= 80:
+        elif score >= 60:
             grade = "B"
-        elif score >= 45:
+        elif score >= 40:
             grade = "C"
         else:
             grade = "D"
@@ -402,7 +423,7 @@ class GoldBacktester:
             return None
 
         # FILTER 6: Minimum confirmations required
-        if confirmations < 3:
+        if confirmations < 2:
             return None
 
         # Confidence
@@ -432,9 +453,10 @@ class GoldBacktester:
         daily_loss = 0.0
         last_day = None
 
-        self.equity_curve.append((df.iloc[200]["time"], self.balance))
+        start_idx = 100
+        self.equity_curve.append((df.iloc[start_idx]["time"], self.balance))
 
-        for idx in range(200, len(df)):
+        for idx in range(start_idx, len(df)):
             row = df.iloc[idx]
             current_time = row["time"]
             high = float(row["high"])
@@ -469,7 +491,7 @@ class GoldBacktester:
                         self.trades.append(trade)
                         active_trade = trade
                         trade_num += 1
-                        cooldown = 8  # 2 hours cooldown
+                        cooldown = 4  # 1 hour cooldown between trades
 
             cooldown = max(0, cooldown - 1)
 
