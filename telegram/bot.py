@@ -824,65 +824,94 @@ Total users: {total}
         self._send_guide(chat_id)
 
     def _send_guide(self, chat_id: str):
-        """Send the comprehensive Getting Started guide (3 messages)."""
+        """Send the comprehensive Getting Started guide (4 messages)."""
 
-        # Part 1: Platform Overview
+        # Part 1: Platform Overview + Website Registration
         self._send(chat_id, """
 \U0001f4d6 <b>GETTING STARTED — ALPHA FX HUB</b>
 \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
 
 \U0001f3af <b>What is Alpha FX Hub?</b>
-A professional XAUUSD (Gold) trading signal platform powered by a 17-module AI engine. We analyze gold across multiple timeframes and deliver high-probability trade signals.
+A professional XAUUSD (Gold) trading signal platform powered by a 20-module institutional AI engine. We track smart money moves and deliver high-probability trade signals.
 
-\U0001f4cd <b>Our Platform has 2 parts:</b>
+\U0001f4cd <b>Our Platform has 2 parts — you NEED both:</b>
 
-<b>1\ufe0f\u20e3 Telegram Channels</b> (you're here!)
-  \u2022 <b>Alpha FX Hub</b> (Public) — Gold news, market updates, economic calendar
-  \u2022 <b>Alpha FX Edge</b> (Private) — LIVE trade signals ONLY
+<b>1\ufe0f\u20e3 Telegram</b> (you're here!)
+  \u2022 <b>Alpha FX Hub</b> (Public) — Gold news, hourly market updates, economic calendar
+  \u2022 <b>Alpha FX Edge</b> (Private) — LIVE trade signals + weekend predictions ONLY
+  \u2022 <i>No chatting in channels — signals and news only</i>
 
-<b>2\ufe0f\u20e3 Website Dashboard</b>
-  \u2022 Signal Dashboard with annotated charts
-  \u2022 Trading Academy (beginner to advanced)
-  \u2022 Risk Calculator & Position Sizer
-  \u2022 Live Trade Tracker
-  \u2022 Economic Calendar with gold impact analysis
-  \u2022 Market Regime Indicator
+<b>2\ufe0f\u20e3 Website Dashboard</b> \u2b07\ufe0f\u2b07\ufe0f <b>MUST REGISTER</b>
   \U0001f449 https://alpha-fx-app-nwontubrtr6mymaqfdtknx.streamlit.app
+
+\u261d\ufe0f <b>You MUST create an account on the website to access:</b>
+  \u2022 \U0001f4ca <b>Signal Dashboard</b> — See all active signals with charts
+  \u2022 \U0001f3eb <b>Trading Academy</b> — Learn gold trading from beginner to advanced
+  \u2022 \U0001f9ee <b>Risk Calculator</b> — Calculate exact lot size before every trade
+  \u2022 \U0001f4c8 <b>Live Trade Tracker</b> — Track your open positions
+  \u2022 \U0001f4c5 <b>Economic Calendar</b> — Upcoming events with gold impact analysis
+  \u2022 \U0001f30d <b>Market Overview</b> — Live price, trend, support/resistance levels
+
+\u26a0\ufe0f <b>Telegram gives you the signals. The website teaches you HOW to trade them properly.</b>
 """.strip())
 
         time.sleep(1)
 
-        # Part 2: How Signals Work
-        self._send(chat_id, f"""
-\U0001f4e1 <b>HOW OUR SIGNALS WORK</b>
+        # Part 2: Website Registration Steps
+        self._send(chat_id, """
+\U0001f310 <b>STEP 1: REGISTER ON OUR WEBSITE</b>
 \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
 
-\u26a0\ufe0f <b>IMPORTANT:</b> Alpha FX Edge (Private Channel) is for <b>LIVE SIGNAL NOTIFICATIONS ONLY</b>. No chatting — just signals. For details, strategy, and learning, use the website.
+\u261d\ufe0f <b>Do this NOW before anything else:</b>
 
-<b>When a signal fires, you'll see:</b>
-  \U0001f7e2 BUY or \U0001f534 SELL direction
-  \u2b50 Grade (A+ = best, A = strong, B = decent)
-  \U0001f3af Entry Price
-  \U0001f6d1 Stop Loss
-  \U0001f4b0 10 Take Profit levels (TP1-TP10)
+1\ufe0f\u20e3 Open our website:
+  \U0001f449 https://alpha-fx-app-nwontubrtr6mymaqfdtknx.streamlit.app
 
-<b>How to trade our signals:</b>
-  1\ufe0f\u20e3 Open MT5 when you see a signal
-  2\ufe0f\u20e3 Enter at the <b>Entry Price</b> shown
-  3\ufe0f\u20e3 Set your <b>Stop Loss</b> immediately
-  4\ufe0f\u20e3 Set TP1 as your first target
-  5\ufe0f\u20e3 Close 30% at TP1, 20% at TP2
-  6\ufe0f\u20e3 Move SL to breakeven after TP1 hits
-  7\ufe0f\u20e3 Let the rest ride with trailing SL
+2\ufe0f\u20e3 Click <b>"Sign Up"</b> and create your account
+  \u2022 Use the same email you want for your trading journey
+  \u2022 Set a strong password
 
-\U0001f4a1 <b>Use our Risk Calculator on the website to calculate your exact lot size before every trade!</b>
+3\ufe0f\u20e3 Log in and explore:
+  \u2022 <b>\U0001f3eb Academy</b> — Start here if you're new to gold trading. Covers candlesticks, support/resistance, risk management, and our signal system
+  \u2022 <b>\U0001f9ee Risk Calculator</b> — Enter your account balance + signal's SL to get exact lot sizes. USE THIS EVERY TRADE
+  \u2022 <b>\U0001f4ca Dashboard</b> — See detailed signal charts and analysis
+  \u2022 <b>\U0001f4c5 Calendar</b> — 1-month economic calendar with gold impact ratings
+
+\U0001f4a1 <b>Pro tip:</b> Study the Academy BEFORE placing your first trade. Knowledge = money saved.
 """.strip())
 
         time.sleep(1)
 
-        # Part 3: MT5 Setup + Quick Links
+        # Part 3: How Signals Work
         self._send(chat_id, f"""
-\U0001f4f1 <b>MT5 BROKER SETUP</b>
+\U0001f4e1 <b>STEP 2: HOW TO FOLLOW OUR SIGNALS</b>
+\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
+
+<b>When a signal fires in Alpha FX Edge, you'll see:</b>
+  \U0001f7e2 BUY or \U0001f534 SELL direction
+  \u2b50 Grade (A+ = best, A = strong)
+  \U0001f3af Entry Price
+  \U0001f6d1 Stop Loss (ALWAYS set this!)
+  \U0001f4b0 10 Take Profit levels (TP1-TP10)
+  \U0001f3e6 Institutional bias (COT + DXY analysis)
+
+<b>6-Step Process:</b>
+  1\ufe0f\u20e3 Signal appears in Alpha FX Edge
+  2\ufe0f\u20e3 Go to <b>website Risk Calculator</b> \u2192 enter your balance + SL pips \u2192 get lot size
+  3\ufe0f\u20e3 Open MT5 \u2192 enter trade at the Entry Price
+  4\ufe0f\u20e3 Set your Stop Loss IMMEDIATELY
+  5\ufe0f\u20e3 TP1 hits? Close 30%, move SL to breakeven
+  6\ufe0f\u20e3 Let remaining position ride with trailing SL
+
+\u26a0\ufe0f <b>NEVER trade without a Stop Loss. NEVER risk more than 2-3% per trade.</b>
+\U0001f4a1 <b>Not sure about something? Check the Academy on the website — it covers everything.</b>
+""".strip())
+
+        time.sleep(1)
+
+        # Part 4: MT5 Setup + Quick Links
+        self._send(chat_id, f"""
+\U0001f4f1 <b>STEP 3: MT5 BROKER SETUP</b>
 \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
 
 <b>Step 1:</b> Download MetaTrader 5 (MT5)
@@ -903,12 +932,18 @@ A professional XAUUSD (Gold) trading signal platform powered by a 17-module AI e
 
 \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
 
+\u2705 <b>CHECKLIST — Make sure you've done all 3:</b>
+  \u2610 Registered on our website (signal dashboard + academy)
+  \u2610 Joined Alpha FX Edge private channel (live signals)
+  \u2610 Set up MT5 with FP Markets broker
+
 \U0001f517 <b>QUICK LINKS:</b>
   \U0001f310 Website: https://alpha-fx-app-nwontubrtr6mymaqfdtknx.streamlit.app
   \U0001f4e2 Public Channel: {self.public_channel_link}
   \U0001f510 Private Signals: {self.private_channel_link}
+  \U0001f4b1 FP Markets: {self.fp_link}
 
-\U0001f4ac <b>Commands:</b>
+\U0001f4ac <b>Bot Commands:</b>
   /guide — See this guide again
   /status — Check your membership status
   /help — All available commands
