@@ -506,6 +506,10 @@ def build_annotated_chart(df: pd.DataFrame, engine_result: dict = None,
 # PAGE: HOME / LANDING
 # ═════════════════════════════════════════════════════════════
 def page_home():
+    # Auto-refresh home page every 60 seconds for live price
+    if st_autorefresh:
+        st_autorefresh(interval=15000, limit=None, key="home_refresh")
+
     # Hero with logo
     logo_path = os.path.join(os.path.dirname(__file__), "logo.png")
     col_l, col_logo, col_r = st.columns([1, 2, 1])
@@ -514,7 +518,7 @@ def page_home():
             st.image(logo_path, use_container_width=True)
     st.markdown("""
     <div class="gold-header" style="text-align:center;">
-        <div class="subtitle" style="font-size:16px;">Professional XAUUSD Gold Trading Platform | 17-Module AI Signal Engine</div>
+        <div class="subtitle" style="font-size:16px;">Professional XAUUSD Gold Trading Platform | 20-Module Institutional Signal Engine</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -602,11 +606,11 @@ def page_home():
 def page_dashboard():
     st.markdown("""<div class="gold-header">
         <h1>\U0001f4ca Signal Dashboard</h1>
-        <div class="subtitle">XAUUSD Gold Signals | 17-Module Engine | Annotated Charts</div>
+        <div class="subtitle">XAUUSD Gold Signals | 20-Module Institutional Engine | Annotated Charts</div>
     </div>""", unsafe_allow_html=True)
 
     if st_autorefresh:
-        st_autorefresh(interval=60000, limit=None, key="dash_refresh")
+        st_autorefresh(interval=15000, limit=None, key="dash_refresh")
 
     # Fetch data
     df_m15 = fetch_bars("XAU/USD", "15min", 200, TWELVE_DATA_API_KEY)
@@ -970,6 +974,9 @@ def page_risk_calc():
 # PAGE: LIVE TRADE TRACKER
 # ═════════════════════════════════════════════════════════════
 def page_tracker():
+    if st_autorefresh:
+        st_autorefresh(interval=15000, limit=None, key="tracker_refresh")
+
     st.markdown("""<div class="gold-header">
         <h1>\U0001f4cc Live Trade Tracker</h1>
         <div class="subtitle">10-TP partial close system | {strategy}</div>
@@ -1093,6 +1100,9 @@ def page_scoreboard():
 # PAGE: MARKET REGIME
 # ═════════════════════════════════════════════════════════════
 def page_regime():
+    if st_autorefresh:
+        st_autorefresh(interval=30000, limit=None, key="regime_refresh")
+
     st.markdown("""<div class="gold-header">
         <h1>\U0001f30d Market Regime Indicator</h1>
         <div class="subtitle">Is gold trending, ranging, or volatile?</div>
