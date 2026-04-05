@@ -51,8 +51,20 @@ def _round_level(price: float) -> float:
 
 
 def _get_session_name() -> str:
-    """Get current trading session based on UTC hour."""
-    hour = datetime.now(timezone.utc).hour
+    """Get current trading session based on UTC hour and day."""
+    now = datetime.now(timezone.utc)
+    day = now.weekday()  # 0=Mon, 6=Sun
+    hour = now.hour
+
+    # Markets closed: Saturday all day, Sunday until ~22:00 UTC
+    if day == 5:  # Saturday
+        return "\U0001f6d1 Market Closed (Weekend)"
+    if day == 6 and hour < 22:  # Sunday before market open
+        return "\U0001f6d1 Market Closed (Weekend)"
+    # Friday after ~21:00 UTC markets winding down
+    if day == 4 and hour >= 21:
+        return "\U0001f6d1 Market Closing (Weekend)"
+
     if 22 <= hour or hour < 7:
         return "\U0001f311 Asian Session"
     elif 7 <= hour < 12:
@@ -260,11 +272,17 @@ def build_hourly_update(events: list, price_data: dict, td_api_key: str = "") ->
     gold_events = get_gold_impact_events(events)
 
     session = _get_session_name()
+    market_closed = "Market Closed" in session
 
     # Price section
     lines = ["\U0001f4f0 <b>ALPHA FX HUB — GOLD HOURLY UPDATE</b>"]
     lines.append(f"\U0001f552 {now.strftime('%a %d %b %Y | %H:%M UTC')} | {session}")
     lines.append("")
+
+    if market_closed:
+        lines.append("\U0001f6d1\U0001f6d1\U0001f6d1 <b>MARKET IS CLOSED — DO NOT TRADE</b> \U0001f6d1\U0001f6d1\U0001f6d1")
+        lines.append("<i>Forex markets are closed over the weekend. Prices shown below are from Friday's close. Use this time to plan your week ahead.</i>")
+        lines.append("")
 
     if price_data:
         current = price_data.get("current", 0)
@@ -274,7 +292,8 @@ def build_hourly_update(events: list, price_data: dict, td_api_key: str = "") ->
         l24 = price_data.get("low_24h", 0)
         daily_range = price_data.get("daily_range", 0)
 
-        lines.append(f"\U0001f4b0 <b>XAUUSD: ${current:.2f}</b>  |  {trend}")
+        price_label = "Friday Close" if market_closed else "XAUUSD"
+        lines.append(f"\U0001f4b0 <b>{price_label}: ${current:.2f}</b>  |  {trend}")
         lines.append(f"\U0001f4ca 24h Range: ${l24:.2f} — ${h24:.2f} (${daily_range:.1f})")
         lines.append(f"\U0001f4cf ATR(14): ${atr:.1f} | Volatility: {'High' if atr > 15 else 'Normal' if atr > 8 else 'Low'}")
         lines.append("")
@@ -289,9 +308,11 @@ def build_hourly_update(events: list, price_data: dict, td_api_key: str = "") ->
     lines.append("\u2500" * 25)
     lines.append("")
 
-    # Upcoming events
-    upcoming = []
-    recent_results = []
+    # Categorize events by timeframe
+    today_events = []      # Next 24h (detailed)
+    this_week = []         # 1-7 days
+    next_weeks = []        # 7-30 days
+    recent_results = []    # Past results
 
     for evt in gold_events:
         try:
@@ -300,20 +321,30 @@ def build_hourly_update(events: list, price_data: dict, td_api_key: str = "") ->
             continue
 
         hours_diff = (evt_time - now).total_seconds() / 3600
+        days_diff = hours_diff / 24
 
-        if 0 < hours_diff <= 48:
-            evt["hours_until"] = hours_diff
-            upcoming.append(evt)
-        elif -12 < hours_diff <= 0 and evt.get("actual"):
+        if -12 < hours_diff <= 0 and evt.get("actual"):
             evt["hours_ago"] = abs(hours_diff)
             recent_results.append(evt)
+        elif 0 < hours_diff <= 24:
+            evt["hours_until"] = hours_diff
+            today_events.append(evt)
+        elif 1 < days_diff <= 7:
+            evt["days_until"] = days_diff
+            evt["event_date"] = evt_time
+            this_week.append(evt)
+        elif 7 < days_diff <= 30:
+            evt["days_until"] = days_diff
+            evt["event_date"] = evt_time
+            next_weeks.append(evt)
 
-    if upcoming:
-        upcoming.sort(key=lambda x: x["hours_until"])
-        lines.append("\U0001f4c5 <b>UPCOMING GOLD-IMPACT EVENTS:</b>")
+    # ── Section 1: TODAY (next 24h — full detail) ──
+    if today_events:
+        today_events.sort(key=lambda x: x["hours_until"])
+        lines.append("\U0001f534 <b>TODAY / NEXT 24 HOURS:</b>")
         lines.append("")
 
-        for evt in upcoming[:6]:
+        for evt in today_events[:6]:
             stars = _importance_stars(evt["importance"])
             impact = evt.get("gold_impact", {})
             impact_level = impact.get("level", "LOW")
@@ -328,22 +359,70 @@ def build_hourly_update(events: list, price_data: dict, td_api_key: str = "") ->
                 prev = evt.get("previous", "N/A")
                 lines.append(f"   Forecast: <b>{fc}</b> | Previous: <b>{prev}</b>")
 
-            # Detailed analysis
             detail = _event_detail(evt["event"])
             lines.append(f"   \U0001f4a1 <i>{detail}</i>")
 
-            # Expected gold reaction
             if impact.get("typical_impact"):
                 lines.append(f"   \U0001f4ca Gold: <b>{impact['typical_impact']}</b>")
             if impact.get("volatility"):
                 lines.append(f"   \u26a1 Volatility: {impact['volatility']}")
 
-            # Source links
             sources = _event_source_link(evt["event"])
             lines.append(f"   {sources}")
             lines.append("")
 
-    # Recent results
+    # ── Section 2: THIS WEEK (1-7 days) ──
+    if this_week:
+        this_week.sort(key=lambda x: x["days_until"])
+        lines.append("\u2500" * 25)
+        lines.append("")
+        lines.append("\U0001f4c5 <b>THIS WEEK:</b>")
+        lines.append("")
+
+        current_day = ""
+        for evt in this_week[:10]:
+            evt_date = evt.get("event_date", now)
+            day_label = evt_date.strftime("%a %d %b")
+            time_label = evt_date.strftime("%H:%M UTC")
+
+            if day_label != current_day:
+                current_day = day_label
+                lines.append(f"\U0001f4cc <b>{day_label}</b>")
+
+            stars = _importance_stars(evt["importance"])
+            emoji = _impact_emoji(evt.get("gold_impact", {}).get("level", "LOW"))
+            lines.append(f"  {emoji} {stars} {evt['event']} — {time_label}")
+
+            if evt.get("forecast"):
+                lines.append(f"     Forecast: {evt['forecast']} | Prev: {evt.get('previous', 'N/A')}")
+        lines.append("")
+
+    # ── Section 3: COMING UP (7-30 days — monthly outlook) ──
+    if next_weeks:
+        next_weeks.sort(key=lambda x: x["days_until"])
+        lines.append("\u2500" * 25)
+        lines.append("")
+        lines.append("\U0001f5d3\ufe0f <b>MONTHLY OUTLOOK (Next 2-4 Weeks):</b>")
+        lines.append("")
+
+        current_week = ""
+        for evt in next_weeks[:15]:
+            evt_date = evt.get("event_date", now)
+            # Group by week
+            week_num = evt_date.isocalendar()[1]
+            week_label = f"Week of {(evt_date - timedelta(days=evt_date.weekday())).strftime('%d %b')}"
+
+            if week_label != current_week:
+                current_week = week_label
+                lines.append(f"\U0001f4c6 <b>{week_label}</b>")
+
+            day_label = evt_date.strftime("%a %d")
+            stars = _importance_stars(evt["importance"])
+            emoji = _impact_emoji(evt.get("gold_impact", {}).get("level", "LOW"))
+            lines.append(f"  {emoji} {stars} {day_label} — {evt['event']}")
+        lines.append("")
+
+    # ── Section 4: Recent Results ──
     if recent_results:
         recent_results.sort(key=lambda x: x["hours_ago"])
         lines.append("\u2500" * 25)
@@ -373,19 +452,22 @@ def build_hourly_update(events: list, price_data: dict, td_api_key: str = "") ->
             lines.append(f"\u2022 <b>{evt['event']}</b>{beat_emoji} ({hours_ago} ago)")
             lines.append(f"  Actual: <b>{actual}</b> | Forecast: {forecast} | Prev: {previous}")
 
-            # What it means for gold
             detail = _event_detail(evt["event"])
             lines.append(f"  \U0001f4a1 <i>{detail[:120]}...</i>")
             lines.append("")
 
-    if not upcoming and not recent_results:
-        lines.append("\U0001f4c5 <b>No major gold-impact events in the next 48 hours.</b>")
+    if not today_events and not this_week and not next_weeks and not recent_results:
+        lines.append("\U0001f4c5 <b>No major gold-impact events scheduled.</b>")
         lines.append("Lower volatility expected — range trading conditions likely.")
         lines.append("")
 
     # Footer
     lines.append("\u2500" * 25)
-    lines.append("\u26a0\ufe0f <i>High-impact events cause $20-50+ gold moves. Manage risk accordingly.</i>")
+    if market_closed:
+        lines.append("\U0001f6d1 <b>REMINDER: Markets are CLOSED. No live trading until Sunday ~22:00 UTC.</b>")
+        lines.append("\U0001f4d6 <i>Use this time to review your week, study the upcoming calendar, and plan your entries for Monday.</i>")
+    else:
+        lines.append("\u26a0\ufe0f <i>High-impact events cause $20-50+ gold moves. Manage risk accordingly.</i>")
     lines.append(f"\U0001f310 <b>Full Platform:</b> https://alpha-fx-app-nwontubrtr6mymaqfdtknx.streamlit.app")
     lines.append(f"\U0001f517 <b>Sources:</b> https://tradingeconomics.com/calendar | https://www.forexfactory.com/calendar")
     lines.append("")
@@ -609,6 +691,17 @@ class NewsPoster:
             pass
 
         return {}
+
+    def _is_market_open(self) -> bool:
+        """Check if forex market is open (closed Sat all day, Sun until ~22 UTC)."""
+        now = datetime.now(timezone.utc)
+        day = now.weekday()  # 0=Mon, 6=Sun
+        hour = now.hour
+        if day == 5:  # Saturday
+            return False
+        if day == 6 and hour < 22:  # Sunday before open
+            return False
+        return True
 
     def _regular_loop(self):
         """Post hourly gold news update."""

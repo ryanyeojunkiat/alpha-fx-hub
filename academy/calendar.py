@@ -18,7 +18,7 @@ _CAL_CACHE_TTL = 3600  # 1 hour (500 req/month quota)
 
 def fetch_economic_calendar(
     api_key: str = None,
-    days_ahead: int = 7,
+    days_ahead: int = 30,
 ) -> List[Dict]:
     """
     Fetch economic calendar from Trading Economics API.
