@@ -35,6 +35,7 @@ if env_file.exists():
 from telegram.bot import TelegramBot
 from telegram.notifications import NotificationManager
 from telegram.news_poster import NewsPoster
+from decision_monitor import DecisionMonitor
 
 # ── Logging ──
 logging.basicConfig(
@@ -144,11 +145,18 @@ def main():
         interval_seconds=3600,  # Every 1 hour
     )
 
+    # ── Decision Monitor: scans XAUUSD + sends Telegram alerts ──
+    decision_monitor = DecisionMonitor(
+        bot_token=BOT_TOKEN,
+        channel_id=PRIVATE_CHANNEL_ID,
+    )
+
     # Graceful shutdown
     def shutdown(signum, frame):
         logger.info("Shutting down bot...")
         bot.stop_polling()
         news_poster.stop()
+        decision_monitor.stop()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, shutdown)
@@ -160,7 +168,11 @@ def main():
 
     # Start news poster (background thread)
     news_poster.start()
-    logger.info("News poster is running — updates every 2 hours.")
+    logger.info("News poster is running — updates every 1 hour.")
+
+    # Start decision monitor (background thread)
+    decision_monitor.start()
+    logger.info("Decision monitor is running — XAUUSD zone alerts active.")
 
     # Keep main thread alive
     while True:

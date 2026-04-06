@@ -1502,7 +1502,7 @@ def page_ai_insights():
 
 def page_decision_assistant():
     """Semi-automated Gold Decision Assistant — NOT auto-trading."""
-    from decision_assistant import BiasEngine, EntryZoneDetector, MarketBias, TelegramAlerts
+    from decision_assistant import BiasEngine, EntryZoneDetector, MarketBias
 
     st.markdown("""<div class="gold-header">
         <h1>\U0001f916 Gold Decision Assistant</h1>
@@ -1646,17 +1646,10 @@ def page_decision_assistant():
 
             if in_zone:
                 st.warning(f"\U0001f3af **PRICE IN ENTRY ZONE** — Watch for confirmation candle")
-                # Send Telegram
-                telegram = TelegramAlerts(TELEGRAM_BOT_TOKEN, TELEGRAM_PRIVATE_CHANNEL_ID)
-                telegram.entry_zone_hit(zone.direction, zone.entry_low, zone.entry_high, price)
+                # NOTE: Telegram alerts sent by Railway decision_monitor.py (not here)
             elif near_zone:
                 st.info(f"\u23f3 Price approaching zone (${abs(price - zone.entry_low):.1f} away)")
-                telegram = TelegramAlerts(TELEGRAM_BOT_TOKEN, TELEGRAM_PRIVATE_CHANNEL_ID)
-                telegram.approaching_zone(
-                    zone.direction, bias.bias, zone.entry_low, zone.entry_high,
-                    price, zone.sl, zone.tp1, zone.tp2, zone.tp3,
-                    zone.confidence, zone.session
-                )
+                # NOTE: Telegram alerts sent by Railway decision_monitor.py (not here)
         else:
             if st.session_state.da_last_zone:
                 z = st.session_state.da_last_zone
@@ -1766,10 +1759,7 @@ def page_decision_assistant():
                     else:
                         trade["sl"] = entry - 1 * SYMBOL_PIP
                     suggestions.append(("success", "\U0001f3af **TP1 Hit!** Close 50% — SL moved to breakeven"))
-                    # Telegram
-                    telegram = TelegramAlerts(TELEGRAM_BOT_TOKEN, TELEGRAM_PRIVATE_CHANNEL_ID)
-                    telegram.trade_update(trade["direction"], entry, price, pips,
-                                          "TP1 hit! SL moved to breakeven", "Close 50% — Move SL to BE")
+                    # Telegram alerts handled by Railway decision_monitor.py
 
             # TP2 hit check
             if trade["tp1_hit"] and not trade["tp2_hit"]:
@@ -1778,9 +1768,7 @@ def page_decision_assistant():
                     trade["tp2_hit"] = True
                     trade["sl"] = trade["tp1"]
                     suggestions.append(("success", "\U0001f3af **TP2 Hit!** Close 30% more — SL trailed to TP1"))
-                    telegram = TelegramAlerts(TELEGRAM_BOT_TOKEN, TELEGRAM_PRIVATE_CHANNEL_ID)
-                    telegram.trade_update(trade["direction"], entry, price, pips,
-                                          "TP2 hit! SL moved to TP1", "Close 30% more — Trail SL to TP1")
+                    # Telegram alerts handled by Railway decision_monitor.py
 
             # TP3 check
             if trade["tp2_hit"]:
