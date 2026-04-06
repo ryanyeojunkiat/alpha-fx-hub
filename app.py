@@ -291,6 +291,7 @@ with st.sidebar:
         "tracker": ("\U0001f4cc", "Live Trade Tracker"),
         "scoreboard": ("\U0001f3c6", "Performance Scoreboard"),
         "regime": ("\U0001f30d", "Market Regime"),
+        "assistant": ("\U0001f916", "Decision Assistant"),
         "backtest": ("\U0001f52c", "Backtest Engine"),
         "ai_insights": ("\U0001f9e0", "AI Learning"),
     }
@@ -1496,11 +1497,359 @@ def page_ai_insights():
 
 
 # ═════════════════════════════════════════════════════════════
+# PAGE: DECISION ASSISTANT
+# ═════════════════════════════════════════════════════════════
+
+def page_decision_assistant():
+    """Semi-automated Gold Decision Assistant — NOT auto-trading."""
+    from decision_assistant import BiasEngine, EntryZoneDetector, MarketBias, TelegramAlerts
+
+    st.markdown("""<div class="gold-header">
+        <h1>\U0001f916 Gold Decision Assistant</h1>
+        <div class="subtitle">Semi-Automated | H1 Bias + M15 Entry | YOU Trade, System Assists</div>
+    </div>""", unsafe_allow_html=True)
+
+    # Initialize session state
+    if "da_active_trade" not in st.session_state:
+        st.session_state.da_active_trade = None
+    if "da_last_zone" not in st.session_state:
+        st.session_state.da_last_zone = None
+    if "da_zones_today" not in st.session_state:
+        st.session_state.da_zones_today = 0
+
+    # Auto-refresh every 30s
+    if st_autorefresh:
+        st_autorefresh(interval=30000, limit=None, key="da_refresh")
+
+    # ── FETCH LIVE DATA ──
+    price = fetch_price(api_key=TWELVE_DATA_API_KEY)
+    m15_df = fetch_bars(interval="15min", outputsize=200, api_key=TWELVE_DATA_API_KEY)
+    h1_df = fetch_bars(interval="1h", outputsize=100, api_key=TWELVE_DATA_API_KEY)
+
+    now_utc = datetime.now(timezone.utc)
+    hour = now_utc.hour
+
+    # Session detection
+    session_name = "OFF"
+    if 7 <= hour < 10:
+        session_name = "LONDON"
+    elif 12 <= hour < 15:
+        session_name = "NEW YORK"
+    elif 12 <= hour < 16:
+        session_name = "LN OVERLAP"
+    elif 5 <= hour < 7:
+        session_name = "PRE-LONDON"
+    elif 0 <= hour < 5 or hour >= 21:
+        session_name = "ASIAN"
+
+    # ── A. MARKET BIAS ENGINE ──
+    bias_engine = BiasEngine()
+    bias = bias_engine.analyze(m15_df, h1_df) if m15_df is not None and h1_df is not None else MarketBias()
+
+    # Top metrics row
+    col1, col2, col3, col4, col5 = st.columns(5)
+
+    with col1:
+        st.markdown(f"""<div class="metric-card">
+            <div class="label">XAUUSD</div>
+            <div class="value">${price:.2f}</div>
+        </div>""", unsafe_allow_html=True)
+
+    with col2:
+        bias_color = "#10b981" if bias.bias == "BULLISH" else ("#ef4444" if bias.bias == "BEARISH" else "#6b7280")
+        st.markdown(f"""<div class="metric-card">
+            <div class="label">Market Bias</div>
+            <div class="value" style="color:{bias_color}">{bias.bias}</div>
+        </div>""", unsafe_allow_html=True)
+
+    with col3:
+        st.markdown(f"""<div class="metric-card">
+            <div class="label">Strength</div>
+            <div class="value">{bias.strength}</div>
+        </div>""", unsafe_allow_html=True)
+
+    with col4:
+        sess_color = "#10b981" if session_name in ("LONDON", "NEW YORK", "LN OVERLAP") else "#6b7280"
+        st.markdown(f"""<div class="metric-card">
+            <div class="label">Session</div>
+            <div class="value" style="color:{sess_color}">{session_name}</div>
+        </div>""", unsafe_allow_html=True)
+
+    with col5:
+        st.markdown(f"""<div class="metric-card">
+            <div class="label">H1 Structure</div>
+            <div class="value">{bias.h1_structure or 'N/A'}</div>
+        </div>""", unsafe_allow_html=True)
+
+    st.markdown("")
+
+    # ── MARKET STRUCTURE DETAILS ──
+    col_left, col_right = st.columns([3, 2])
+
+    with col_left:
+        st.markdown("### Market Structure")
+
+        struct_col1, struct_col2, struct_col3 = st.columns(3)
+        with struct_col1:
+            st.metric("Key High", f"${bias.key_high:.2f}" if bias.key_high else "—")
+            st.metric("EMA 50", f"${bias.ema50:.2f}" if bias.ema50 else "—")
+        with struct_col2:
+            st.metric("Key Low", f"${bias.key_low:.2f}" if bias.key_low else "—")
+            st.metric("EMA 200", f"${bias.ema200:.2f}" if bias.ema200 else "—")
+        with struct_col3:
+            st.metric("ATR (H1)", f"${bias.atr:.2f}" if bias.atr else "—")
+            st.metric("Setups Today", f"{st.session_state.da_zones_today}/3")
+
+        # Liquidity levels
+        if bias.liquidity_above or bias.liquidity_below:
+            st.markdown("**Liquidity Levels**")
+            liq_col1, liq_col2 = st.columns(2)
+            with liq_col1:
+                st.markdown("Sell-side (above):")
+                for lvl in (bias.liquidity_above or [])[:4]:
+                    dist = lvl - price
+                    st.markdown(f"&nbsp;&nbsp; `${lvl:.2f}` (+${dist:.1f})")
+            with liq_col2:
+                st.markdown("Buy-side (below):")
+                for lvl in (bias.liquidity_below or [])[:4]:
+                    dist = price - lvl
+                    st.markdown(f"&nbsp;&nbsp; `${lvl:.2f}` (-${dist:.1f})")
+
+    with col_right:
+        # ── B. SMART ENTRY ZONE ──
+        st.markdown("### Entry Zone")
+
+        zone_detector = EntryZoneDetector()
+        zone = None
+        if m15_df is not None and h1_df is not None and st.session_state.da_zones_today < 3:
+            zone = zone_detector.detect(m15_df, h1_df, bias, price)
+
+        if zone and zone.confidence >= 50:
+            st.session_state.da_last_zone = zone
+            dir_color = "#10b981" if zone.direction == "BUY" else "#ef4444"
+            dir_bg = "signal-buy" if zone.direction == "BUY" else "signal-sell"
+
+            st.markdown(f"""<div class="signal-card {dir_bg}">
+                <span style="font-size:20px; font-weight:700; color:white;">{zone.direction} ZONE</span><br>
+                <span style="font-size:14px; color:#d1d5db;">Entry: <b>${zone.entry_low:.2f} – ${zone.entry_high:.2f}</b></span><br>
+                <span style="color:#9ca3af;">SL: ${zone.sl:.2f}</span><br>
+                <span style="color:#9ca3af;">TP1: ${zone.tp1:.2f} | TP2: ${zone.tp2:.2f} | TP3: ${zone.tp3:.2f}</span><br>
+                <span style="color:#9ca3af;">R:R: 1:{zone.rr_ratio}</span><br>
+                <span style="color:#00d4ff; font-weight:600;">Confidence: {zone.confidence}%</span><br>
+                <span style="color:#6b7280; font-size:12px;">{zone.reason}</span><br>
+                <span style="color:#6b7280; font-size:12px;">Valid until: {zone.valid_until}</span>
+            </div>""", unsafe_allow_html=True)
+
+            # Check proximity to zone for alert
+            in_zone = zone.entry_low <= price <= zone.entry_high
+            near_zone = (zone.entry_low - 1.0 <= price <= zone.entry_high + 1.0) and not in_zone
+
+            if in_zone:
+                st.warning(f"\U0001f3af **PRICE IN ENTRY ZONE** — Watch for confirmation candle")
+                # Send Telegram
+                telegram = TelegramAlerts(TELEGRAM_BOT_TOKEN, TELEGRAM_PRIVATE_CHANNEL_ID)
+                telegram.entry_zone_hit(zone.direction, zone.entry_low, zone.entry_high, price)
+            elif near_zone:
+                st.info(f"\u23f3 Price approaching zone (${abs(price - zone.entry_low):.1f} away)")
+                telegram = TelegramAlerts(TELEGRAM_BOT_TOKEN, TELEGRAM_PRIVATE_CHANNEL_ID)
+                telegram.approaching_zone(
+                    zone.direction, bias.bias, zone.entry_low, zone.entry_high,
+                    price, zone.sl, zone.tp1, zone.tp2, zone.tp3,
+                    zone.confidence, zone.session
+                )
+        else:
+            if st.session_state.da_last_zone:
+                z = st.session_state.da_last_zone
+                st.markdown(f"""<div style="background:#1f2937; border:1px solid #374151; border-radius:10px; padding:16px;">
+                    <span style="color:#6b7280;">Last zone: {z.direction} ${z.entry_low:.2f}–${z.entry_high:.2f}</span><br>
+                    <span style="color:#4b5563; font-size:12px;">Waiting for new setup...</span>
+                </div>""", unsafe_allow_html=True)
+            else:
+                st.markdown("""<div style="background:#1f2937; border:1px solid #374151; border-radius:10px; padding:16px;">
+                    <span style="color:#6b7280;">No active zone</span><br>
+                    <span style="color:#4b5563; font-size:12px;">Scanning for liquidity sweep + pullback...</span>
+                </div>""", unsafe_allow_html=True)
+
+    st.divider()
+
+    # ── D. TRADE MANAGER ──
+    st.markdown("### Trade Manager")
+    st.caption("Enter your trade manually after you execute it. The system will track and suggest management actions.")
+
+    trade_col1, trade_col2 = st.columns([1, 2])
+
+    with trade_col1:
+        with st.form("trade_entry_form"):
+            direction = st.selectbox("Direction", ["BUY", "SELL"])
+            entry_price = st.number_input("Entry Price", value=float(f"{price:.2f}"), step=0.1, format="%.2f")
+
+            # Auto-fill from zone if available
+            z = st.session_state.da_last_zone
+            if z and z.direction == direction:
+                default_sl = z.sl
+                default_tp1 = z.tp1
+                default_tp2 = z.tp2
+                default_tp3 = z.tp3
+            else:
+                atr = bias.atr if bias.atr > 0 else 5.0
+                if direction == "BUY":
+                    default_sl = entry_price - atr * 1.5
+                    default_tp1 = entry_price + atr * 2.0
+                    default_tp2 = entry_price + atr * 3.5
+                    default_tp3 = entry_price + atr * 5.0
+                else:
+                    default_sl = entry_price + atr * 1.5
+                    default_tp1 = entry_price - atr * 2.0
+                    default_tp2 = entry_price - atr * 3.5
+                    default_tp3 = entry_price - atr * 5.0
+
+            sl = st.number_input("Stop Loss", value=float(f"{default_sl:.2f}"), step=0.1, format="%.2f")
+            tp1 = st.number_input("TP1", value=float(f"{default_tp1:.2f}"), step=0.1, format="%.2f")
+            tp2 = st.number_input("TP2", value=float(f"{default_tp2:.2f}"), step=0.1, format="%.2f")
+            tp3 = st.number_input("TP3", value=float(f"{default_tp3:.2f}"), step=0.1, format="%.2f")
+
+            submitted = st.form_submit_button("Register Trade", type="primary", use_container_width=True)
+            if submitted:
+                st.session_state.da_active_trade = {
+                    "direction": direction,
+                    "entry_price": entry_price,
+                    "sl": sl,
+                    "original_sl": sl,
+                    "tp1": tp1,
+                    "tp2": tp2,
+                    "tp3": tp3,
+                    "tp1_hit": False,
+                    "tp2_hit": False,
+                    "sl_at_be": False,
+                    "opened_at": now_utc.strftime("%H:%M UTC"),
+                }
+                st.session_state.da_zones_today += 1
+                st.success(f"Trade registered: {direction} @ ${entry_price:.2f}")
+
+        if st.session_state.da_active_trade:
+            if st.button("Close Trade", use_container_width=True):
+                st.session_state.da_active_trade = None
+                st.rerun()
+
+    with trade_col2:
+        trade = st.session_state.da_active_trade
+        if trade:
+            entry = trade["entry_price"]
+            if trade["direction"] == "BUY":
+                pips = (price - entry) / SYMBOL_PIP
+                pnl_color = "#10b981" if pips > 0 else "#ef4444"
+            else:
+                pips = (entry - price) / SYMBOL_PIP
+                pnl_color = "#10b981" if pips > 0 else "#ef4444"
+
+            st.markdown(f"""<div class="metric-card" style="text-align:left; padding:20px;">
+                <div style="font-size:18px; font-weight:700; color:white;">{trade['direction']} Trade Active</div>
+                <div style="color:#9ca3af; margin-top:8px;">Entry: ${entry:.2f} | Current: ${price:.2f}</div>
+                <div style="color:{pnl_color}; font-size:28px; font-weight:700; font-family:'Space Mono',monospace; margin:10px 0;">
+                    {pips:+.1f} pips
+                </div>
+                <div style="color:#9ca3af;">SL: ${trade['sl']:.2f} {'(at BE)' if trade['sl_at_be'] else ''}</div>
+                <div style="color:#9ca3af;">TP1: ${trade['tp1']:.2f} {'✓' if trade['tp1_hit'] else ''} | TP2: ${trade['tp2']:.2f} {'✓' if trade['tp2_hit'] else ''} | TP3: ${trade['tp3']:.2f}</div>
+            </div>""", unsafe_allow_html=True)
+
+            # ── LIVE TRADE SUGGESTIONS ──
+            suggestions = []
+
+            # TP1 hit check
+            if not trade["tp1_hit"]:
+                if (trade["direction"] == "BUY" and price >= trade["tp1"]) or \
+                   (trade["direction"] == "SELL" and price <= trade["tp1"]):
+                    trade["tp1_hit"] = True
+                    trade["sl_at_be"] = True
+                    if trade["direction"] == "BUY":
+                        trade["sl"] = entry + 1 * SYMBOL_PIP
+                    else:
+                        trade["sl"] = entry - 1 * SYMBOL_PIP
+                    suggestions.append(("success", "\U0001f3af **TP1 Hit!** Close 50% — SL moved to breakeven"))
+                    # Telegram
+                    telegram = TelegramAlerts(TELEGRAM_BOT_TOKEN, TELEGRAM_PRIVATE_CHANNEL_ID)
+                    telegram.trade_update(trade["direction"], entry, price, pips,
+                                          "TP1 hit! SL moved to breakeven", "Close 50% — Move SL to BE")
+
+            # TP2 hit check
+            if trade["tp1_hit"] and not trade["tp2_hit"]:
+                if (trade["direction"] == "BUY" and price >= trade["tp2"]) or \
+                   (trade["direction"] == "SELL" and price <= trade["tp2"]):
+                    trade["tp2_hit"] = True
+                    trade["sl"] = trade["tp1"]
+                    suggestions.append(("success", "\U0001f3af **TP2 Hit!** Close 30% more — SL trailed to TP1"))
+                    telegram = TelegramAlerts(TELEGRAM_BOT_TOKEN, TELEGRAM_PRIVATE_CHANNEL_ID)
+                    telegram.trade_update(trade["direction"], entry, price, pips,
+                                          "TP2 hit! SL moved to TP1", "Close 30% more — Trail SL to TP1")
+
+            # TP3 check
+            if trade["tp2_hit"]:
+                if (trade["direction"] == "BUY" and price >= trade["tp3"]) or \
+                   (trade["direction"] == "SELL" and price <= trade["tp3"]):
+                    suggestions.append(("success", "\U0001f389 **TP3 Hit!** Full target achieved — Close remaining position"))
+
+            # Structure change warning
+            if trade["direction"] == "BUY" and bias.bias == "BEARISH":
+                suggestions.append(("warning", f"\u26a0\ufe0f **Bearish CHoCH** — H1 structure now {bias.h1_structure}. Consider {'closing remaining' if trade['tp1_hit'] else 'reducing position'}"))
+            elif trade["direction"] == "SELL" and bias.bias == "BULLISH":
+                suggestions.append(("warning", f"\u26a0\ufe0f **Bullish CHoCH** — H1 structure now {bias.h1_structure}. Consider {'closing remaining' if trade['tp1_hit'] else 'reducing position'}"))
+
+            # Running in profit suggestion
+            if pips > 0 and not suggestions:
+                if trade["direction"] == "BUY":
+                    next_target = trade["tp1"] if not trade["tp1_hit"] else (trade["tp2"] if not trade["tp2_hit"] else trade["tp3"])
+                    pips_to_target = (next_target - price) / SYMBOL_PIP
+                else:
+                    next_target = trade["tp1"] if not trade["tp1_hit"] else (trade["tp2"] if not trade["tp2_hit"] else trade["tp3"])
+                    pips_to_target = (price - next_target) / SYMBOL_PIP
+                suggestions.append(("info", f"\U0001f4ca Running +{pips:.0f} pips — {pips_to_target:.0f} pips to next target. **Hold.**"))
+
+            elif pips < -20 and not suggestions:
+                suggestions.append(("warning", f"\U0001f4c9 Trade in drawdown ({pips:.0f} pips). SL will protect at ${trade['sl']:.2f}."))
+
+            for level, msg in suggestions:
+                if level == "success":
+                    st.success(msg)
+                elif level == "warning":
+                    st.warning(msg)
+                else:
+                    st.info(msg)
+
+        else:
+            st.markdown("""<div style="background:#1f2937; border:1px solid #374151; border-radius:10px; padding:30px; text-align:center;">
+                <span style="color:#6b7280; font-size:16px;">No active trade</span><br>
+                <span style="color:#4b5563; font-size:13px;">Use the form to register your trade after manual execution</span>
+            </div>""", unsafe_allow_html=True)
+
+    # ── NOTIFICATION STATUS ──
+    st.divider()
+    notif_col1, notif_col2 = st.columns(2)
+    with notif_col1:
+        st.markdown("**Notification Rules**")
+        st.markdown("""
+        - Price approaching entry zone ($1 away)
+        - Entry zone hit
+        - TP1/TP2/TP3 hit with management action
+        - Structure change (CHoCH) against trade
+        - NO spam during Asian session
+        """)
+    with notif_col2:
+        st.markdown("**Active Filters**")
+        st.markdown(f"""
+        - Direction: **{bias.bias} only** (structure filter)
+        - Session: **{'Active' if session_name in ('LONDON', 'NEW YORK', 'LN OVERLAP') else 'Inactive — ' + session_name}**
+        - Sweep required before entry zone
+        - Max 3 setups per day
+        """)
+
+
+# ═════════════════════════════════════════════════════════════
 # PAGE ROUTER
 # ═════════════════════════════════════════════════════════════
 PAGE_MAP = {
     "home": page_home,
     "dashboard": page_dashboard,
+    "assistant": page_decision_assistant,
     "academy": page_academy,
     "manual": page_manual,
     "calendar": page_calendar,
