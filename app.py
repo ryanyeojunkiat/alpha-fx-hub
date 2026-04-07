@@ -1,2562 +1,1785 @@
 """
-Alpha FX Hub — Main Application
-XAUUSD Gold Trading Platform
-
-Pages:
-  1. Landing / Home
-  2. Signal Dashboard (with annotated charts)
-  3. Trading Academy (lessons + signal manual)
-  4. Economic Calendar (gold impact analysis)
-  5. Risk Calculator & Position Sizer
-  6. Live Trade Tracker (10-TP system)
-  7. Performance Scoreboard
-  8. Market Regime Indicator
+Alpha FX Hub — V12 Clean Architecture Trading Terminal
+Rebuilt from V12 production code with modern structure.
+- Single-file Streamlit app
+- 3-column dashboard layout
+- 7-component scoring engine (max 100 pts)
+- Grok AI as post-entry advisor
+- Live/Backtest/Journal modes
 """
-import os
-import sys
-import json
-import time
-import logging
-import threading
-from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, List
 
-import streamlit as st
-import pandas as pd
+import os, json, re
+from dataclasses import dataclass, field
+from typing import Dict, Any, Optional, Tuple, List
+from datetime import datetime, timedelta
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-
-# Add project root to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from config import (
-    PLATFORM_NAME, VERSION, SYMBOL, SYMBOL_PIP,
-    TELEGRAM_BOT_TOKEN, ADMIN_TELEGRAM_IDS,
-    TELEGRAM_PUBLIC_CHANNEL_ID, TELEGRAM_PRIVATE_CHANNEL_ID,
-    TELEGRAM_PUBLIC_CHANNEL_LINK, TELEGRAM_PRIVATE_CHANNEL_LINK,
-    FP_MARKETS_LINK, FP_MARKETS_CODE,
-    TE_API_KEY, TWELVE_DATA_API_KEY,
-    SUPABASE_URL, SUPABASE_KEY,
-    KILLZONES_UTC, TP_LEVELS_PIPS, TP_LOT_PCT,
-    GRADE_THRESHOLDS, MODULE_WEIGHTS,
-    RISK_CONSERVATIVE_PCT, RISK_MODERATE_PCT, RISK_AGGRESSIVE_PCT,
-    MAX_DAILY_LOSS_PCT, MAX_DRAWDOWN_PCT,
-    GOLD_IMPACT_EVENTS,
-    SYMBOLS, ACTIVE_SYMBOLS,
-    GROK_API_KEY,
-)
-# Legacy alias
-TELEGRAM_CHANNEL_ID = TELEGRAM_PRIVATE_CHANNEL_ID
-from engine.indicators import add_indicators, detect_fvg_candles, find_swing_points
-from engine.gold_engine import gold_engine_score, detect_choch_realtime, detect_fvg_entry
-from engine.levels import compute_levels, compute_10tp_levels, compute_lot_tiers, compute_trailing_sl
-from engine.data import (fetch_bars, fetch_price, fetch_metaapi_price, get_metaapi_account_info,
-                         get_metaapi_open_trades, get_metaapi_pending_orders, analyze_trade_liquidity_risk)
-from engine.signal_scanner import SignalScanner, Signal
-from engine.grok_engine import GrokEngine, get_grok_engine
-from engine.unified_engine import UnifiedEngine, UnifiedSignal, get_unified_engine
-from trading.trade_manager import TradeManager, Trade, STRATEGIES
-from trading.risk_manager import RiskManager
-from academy.lessons import ACADEMY_LESSONS, SIGNAL_MANUAL
-from academy.lessons_zh import SIGNAL_MANUAL_ZH, ACADEMY_LESSONS_ZH
-from academy.calendar import fetch_economic_calendar, get_gold_impact_events, is_high_impact_soon
-from engine.backtester import run_backtest
-# NOTE: TelegramBot polling runs on Railway (bot_runner.py) — NOT here
-# Only import NotificationManager for sending signals to channels
-from telegram.notifications import NotificationManager
-from auth.supabase_auth import SupabaseAuth, render_auth_page
-from trading.cloud_sync import CloudTradeSync
-from engine.adaptive_learner import AdaptiveLearner
+import requests
+import streamlit as st
+import streamlit.components.v1 as st_components
 
 try:
     from streamlit_autorefresh import st_autorefresh
-except ImportError:
+except Exception:
     st_autorefresh = None
 
-# ── Logging ──
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
-logger = logging.getLogger("alpha_fx_hub")
+# Import internal modules
+from config import (
+    PLATFORM_NAME, VERSION, TELEGRAM_BOT_TOKEN, TELEGRAM_PRIVATE_CHANNEL_ID,
+    TELEGRAM_PUBLIC_CHANNEL_ID, SUPABASE_URL, SUPABASE_KEY, TWELVE_DATA_API_KEY,
+    METAAPI_TOKEN, METAAPI_ACCOUNT, SYMBOLS, ACTIVE_SYMBOLS
+)
+from telegram.notifications import NotificationManager
+from auth.supabase_auth import SupabaseAuth, render_auth_page, _clear_browser_session
 
-# ── Page Config ──
+# GROK_API_KEY may not be in config, use xAI key pattern instead
+try:
+    from config import GROK_API_KEY
+except ImportError:
+    GROK_API_KEY = os.getenv("XAI_API_KEY", "")
+
+# ============================================================
+# PAGE CONFIG
+# ============================================================
 st.set_page_config(
-    page_title=PLATFORM_NAME,
-    page_icon="\u25c8",
+    page_title=f"{PLATFORM_NAME} V12",
+    page_icon="📈",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="expanded"
 )
 
-# ── Custom CSS ──
-st.markdown("""
-<style>
-    @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Inter:wght@300;400;500;600;700&display=swap');
+st.markdown("""<style>
+html,body,[data-testid="stAppViewContainer"]{background:#080c10!important;color:#e8edf2!important;font-family:'DM Sans','Segoe UI',sans-serif;}
+[data-testid="stSidebar"]{background:#0d1117!important;border-right:1px solid rgba(255,255,255,0.06)!important;}
+[data-testid="stHeader"]{background:transparent!important;}
+[data-testid="stMetricValue"]{color:#e8edf2!important;font-family:'Space Mono',monospace!important;font-size:13px!important;}
+[data-testid="stMetricLabel"]{color:#8b9ab0!important;font-size:10px!important;}
+.stButton>button{background:rgba(0,212,170,0.08)!important;border:1px solid rgba(0,212,170,0.25)!important;color:#00d4aa!important;font-family:'Space Mono',monospace!important;border-radius:6px!important;}
+.stSelectbox>div>div,.stNumberInput>div>div{background:#131a22!important;border-color:rgba(255,255,255,0.1)!important;color:#e8edf2!important;border-radius:6px!important;}
+.signal-box{padding:10px 18px;border-radius:8px;font-family:'Space Mono',monospace;font-size:13px;font-weight:700;letter-spacing:.08em;text-align:center;display:inline-block;min-width:180px;}
+.signal-buy{background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.3);color:#10b981;}
+.signal-sell{background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);color:#ef4444;}
+.signal-wait{background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.3);color:#f59e0b;}
+.panel{background:#0d1117;border:1px solid rgba(255,255,255,0.07);border-radius:8px;padding:12px 14px;margin-bottom:10px;}
+.mono-title{color:#00d4aa;font-size:11px;font-family:'Space Mono',monospace;letter-spacing:.12em;margin-bottom:8px;}
+.kv{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05);font-size:13px;}
+.kv:last-child{border-bottom:none;}
+.muted{color:#8b9ab0;}.good{color:#10b981;}.bad{color:#ef4444;}.warn{color:#f59e0b;}.info{color:#0ea5e9;}
+.ai-bubble{background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25);border-left:3px solid #6366f1;border-radius:8px;padding:12px 14px;margin:8px 0;font-size:12px;color:#c7d2fe;line-height:1.75;}
+.ai-header{font-family:'Space Mono',monospace;font-size:10px;color:#6366f1;letter-spacing:.1em;margin-bottom:6px;}
+.conf-bar{height:6px;border-radius:3px;margin:4px 0;}
+</style>""", unsafe_allow_html=True)
 
-    .main .block-container { padding-top: 1rem; max-width: 1400px; }
+# ============================================================
+# CONSTANTS
+# ============================================================
+APP_VERSION = "V12.0"
+_ENV_TD = TWELVE_DATA_API_KEY or os.getenv("TWELVE_DATA_API_KEY", "").strip()
+_ENV_XAI = GROK_API_KEY or os.getenv("XAI_API_KEY", "").strip()
 
-    .gold-header {
-        background: linear-gradient(135deg, #0a0e17 0%, #0d1b2a 50%, #0f2847 100%);
-        border: 1px solid rgba(0,212,255,0.25);
-        border-radius: 12px;
-        padding: 20px 28px;
-        margin-bottom: 20px;
-    }
-    .gold-header h1 {
-        font-family: 'Space Mono', monospace;
-        background: linear-gradient(135deg, #c0c0c0, #00d4ff);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        font-size: 28px;
-        margin: 0;
-    }
-    .gold-header .subtitle {
-        color: #7dd3fc;
-        font-size: 14px;
-        margin-top: 4px;
-    }
+INTERNAL_SYMBOLS = list(ACTIVE_SYMBOLS or ["EURUSD","GBPUSD","USDJPY","XAUUSD","EURCHF",
+                    "AUDUSD","USDCAD","NZDUSD","USDCHF","BTCUSD"])
+API_SYMBOL_MAP = {
+    "EURUSD":"EUR/USD","GBPUSD":"GBP/USD","USDJPY":"USD/JPY",
+    "XAUUSD":"XAU/USD","EURCHF":"EUR/CHF","AUDUSD":"AUD/USD",
+    "USDCAD":"USD/CAD","NZDUSD":"NZD/USD","USDCHF":"USD/CHF","BTCUSD":"BTC/USD"
+}
+SYMBOL_NAMES = {
+    "EURUSD":"EUR/USD Euro vs US Dollar","GBPUSD":"GBP/USD British Pound vs USD",
+    "USDJPY":"USD/JPY US Dollar vs Japanese Yen","XAUUSD":"Gold (XAU/USD)",
+    "EURCHF":"EUR/CHF","AUDUSD":"AUD/USD Australian Dollar","USDCAD":"USD/CAD",
+    "NZDUSD":"NZD/USD New Zealand Dollar","USDCHF":"USD/CHF","BTCUSD":"Bitcoin vs USD"
+}
+INTERVAL_MAP = {"1 Min":"1min","5 Min":"5min","15 Min":"15min",
+                "30 Min":"30min","1 Hour":"1h","4 Hours":"4h"}
+PIP_SIZE_MAP = {"USDJPY":0.01,"XAUUSD":0.1,"BTCUSD":1.0}
+PIP_VALUE_MAP = {"USDJPY":9.1,"XAUUSD":10.0,"BTCUSD":1.0}
+FOREX_SYMBOLS = {s for s in INTERNAL_SYMBOLS if s!="BTCUSD"}
+XAU_SESSIONS_UTC = [(7,16),(12,21)]
 
-    .metric-card {
-        background: #111827;
-        border: 1px solid rgba(0,212,255,0.15);
-        border-radius: 10px;
-        padding: 16px;
-        text-align: center;
-    }
-    .metric-card .label { color: #9ca3af; font-size: 12px; text-transform: uppercase; }
-    .metric-card .value { color: #00d4ff; font-size: 24px; font-weight: 700; font-family: 'Space Mono', monospace; }
+SESSIONS = {
+    "London":  (7,16),
+    "NewYork": (12,21),
+    "Overlap": (12,16),
+    "Asian":   (22, 7),
+}
+PAIR_SESSIONS = {
+    "EURUSD":["London","Overlap","NewYork"],
+    "GBPUSD":["London","Overlap","NewYork"],
+    "USDJPY":["Asian","London","Overlap"],
+    "EURCHF":["London","Overlap"],
+    "AUDUSD":["Asian","London"],
+    "USDCAD":["NewYork","Overlap"],
+    "NZDUSD":["Asian","London"],
+    "USDCHF":["London","Overlap","NewYork"],
+    "BTCUSD":["London","NewYork","Overlap"],
+    "XAUUSD":["London","Overlap","NewYork"],
+}
 
-    .signal-card {
-        border-radius: 12px;
-        padding: 20px;
-        margin: 10px 0;
-    }
-    .signal-buy {
-        background: linear-gradient(135deg, #064e3b, #065f46);
-        border: 1px solid #10b981;
-    }
-    .signal-sell {
-        background: linear-gradient(135deg, #7f1d1d, #991b1b);
-        border: 1px solid #ef4444;
-    }
+MT5_SYMBOL_MAP: Dict[str,str] = {
+    "EURUSD":"EURUSD","GBPUSD":"GBPUSD","USDJPY":"USDJPY",
+    "XAUUSD":"XAUUSD","AUDUSD":"AUDUSD","USDCAD":"USDCAD",
+    "NZDUSD":"NZDUSD","USDCHF":"USDCHF","BTCUSD":"BTCUSD",
+}
 
-    .grade-badge {
-        display: inline-block;
-        padding: 4px 12px;
-        border-radius: 6px;
-        font-weight: 700;
-        font-family: 'Space Mono', monospace;
-    }
-    .grade-aplus { background: linear-gradient(135deg, #00d4ff, #0ea5e9); color: #000; }
-    .grade-a { background: #10b981; color: #000; }
-    .grade-b { background: #3b82f6; color: #fff; }
-    .grade-c { background: #6b7280; color: #fff; }
+# ============================================================
+# HELPERS
+# ============================================================
+def norm(s):
+    return str(s).upper().replace("/","").strip()
 
-    .alert-red {
-        background: rgba(239,68,68,0.15);
-        border: 1px solid #ef4444;
-        border-radius: 8px;
-        padding: 12px;
-    }
-    .alert-yellow {
-        background: rgba(0,212,255,0.1);
-        border: 1px solid #00d4ff;
-        border-radius: 8px;
-        padding: 12px;
-    }
-    .alert-green {
-        background: rgba(16,185,129,0.15);
-        border: 1px solid #10b981;
-        border-radius: 8px;
-        padding: 12px;
-    }
-    .alert-blue {
-        background: rgba(59,130,246,0.15);
-        border: 1px solid #3b82f6;
-        border-radius: 8px;
-        padding: 12px;
-    }
+def to_api_symbol(s):
+    return API_SYMBOL_MAP.get(norm(s), norm(s))
 
-    .lesson-card {
-        background: #111827;
-        border: 1px solid rgba(245,166,35,0.15);
-        border-radius: 10px;
-        padding: 20px;
-        margin: 8px 0;
-        cursor: pointer;
-    }
-    .lesson-card:hover { border-color: #F5A623; }
+def pip_size(s):
+    return PIP_SIZE_MAP.get(norm(s), 0.0001)
 
-    .tp-bar { height: 20px; border-radius: 4px; display: inline-block; }
-    .tp-hit { background: #10b981; }
-    .tp-pending { background: #374151; }
+def pip_value(s):
+    return PIP_VALUE_MAP.get(norm(s), 10.0)
 
-    div[data-testid="stSidebar"] {
-        background: #0a0e17;
-        border-right: 1px solid rgba(0,212,255,0.1);
-    }
-</style>
-""", unsafe_allow_html=True)
+def get_td_key():
+    return st.session_state.get("td_key","") or _ENV_TD
 
+def get_xai_key():
+    return st.session_state.get("xai_key","") or _ENV_XAI
 
-# ═════════════════════════════════════════════════════════════
-# SESSION STATE INITIALIZATION
-# ═════════════════════════════════════════════════════════════
-def init_state():
-    if "page" not in st.session_state:
-        st.session_state.page = "home"
-    if "scanner" not in st.session_state:
-        st.session_state.scanner = SignalScanner(balance=10000, api_key=TWELVE_DATA_API_KEY)
+def get_grok_model():
+    return st.session_state.get("grok_model","grok-4-1-fast-non-reasoning")
 
-    # ── Cloud Sync (trade history to Supabase) ──
-    if "cloud_sync" not in st.session_state:
-        if SUPABASE_URL and SUPABASE_KEY:
-            st.session_state.cloud_sync = CloudTradeSync(SUPABASE_URL, SUPABASE_KEY)
+def get_ma_token():
+    return st.session_state.get("ma_token","") or METAAPI_TOKEN
+
+def get_ma_account():
+    return st.session_state.get("ma_account","") or METAAPI_ACCOUNT
+
+def mt5_symbol(s:str) -> str:
+    suffix = st.session_state.get("ma_sym_suffix","")
+    base = MT5_SYMBOL_MAP.get(norm(s), norm(s))
+    return base + suffix
+
+# ============================================================
+# METAAPI REST
+# ============================================================
+_MA_PROVISION_URL = "https://mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai"
+
+@st.cache_data(ttl=120)
+def _ma_get_region(token:str, account_id:str) -> str:
+    try:
+        r = requests.get(f"{_MA_PROVISION_URL}/users/current/accounts/{account_id}",
+                         headers={"auth-token":token}, timeout=8)
+        if r.status_code == 200:
+            return r.json().get("region","new-york")
+    except Exception:
+        pass
+    return "new-york"
+
+def _ma_client_url(token:str, account_id:str) -> str:
+    region = _ma_get_region(token, account_id)
+    return f"https://mt-client-api-v1.{region}.agiliumtrade.ai"
+
+@st.cache_data(ttl=3)
+def fetch_mt5_price(symbol:str, token:str, account_id:str) -> Optional[Dict]:
+    if not token or not account_id:
+        return None
+    base = _ma_client_url(token, account_id)
+    sym = mt5_symbol(symbol)
+    def _try(s):
+        try:
+            r = requests.get(f"{base}/users/current/accounts/{account_id}/symbols/{s}/current-price",
+                             headers={"auth-token":token}, timeout=5)
+            if r.status_code == 200:
+                d = r.json()
+                bid = float(d.get("bid",0))
+                ask = float(d.get("ask",0))
+                mid = (bid+ask)/2
+                ps = pip_size(symbol)
+                spread = round(abs(ask-bid)/ps, 1) if ps else 0
+                return {"bid":bid,"ask":ask,"mid":mid,"spread_pips":spread,
+                        "symbol":symbol,"mt5_sym":s,"ts":d.get("time","")}
+        except Exception:
+            pass
+        return None
+    result = _try(sym)
+    if result is None and sym != norm(symbol):
+        result = _try(norm(symbol))
+    return result
+
+@st.cache_data(ttl=5)
+def fetch_mt5_positions(token:str, account_id:str) -> List[Dict]:
+    if not token or not account_id:
+        return []
+    base = _ma_client_url(token, account_id)
+    try:
+        r = requests.get(f"{base}/users/current/accounts/{account_id}/positions",
+                         headers={"auth-token":token}, timeout=5)
+        if r.status_code == 200:
+            return r.json()
+    except Exception:
+        pass
+    return []
+
+@st.cache_data(ttl=30)
+def fetch_mt5_account_info(token:str, account_id:str) -> Optional[Dict]:
+    if not token or not account_id:
+        return None
+    base = _ma_client_url(token, account_id)
+    try:
+        r = requests.get(f"{base}/users/current/accounts/{account_id}/account-information",
+                         headers={"auth-token":token}, timeout=5)
+        if r.status_code == 200:
+            return r.json()
+    except Exception:
+        pass
+    return None
+
+def test_mt5_connection(token:str, account_id:str) -> Tuple[bool,str]:
+    lines = []
+    headers = {"auth-token": token}
+    prov_url = f"{_MA_PROVISION_URL}/users/current/accounts/{account_id}"
+    lines.append(f"Provisioning API...")
+    region = "new-york"
+    try:
+        rp = requests.get(prov_url, headers=headers, timeout=8)
+        lines.append(f"HTTP {rp.status_code}")
+        if rp.status_code == 200:
+            acc = rp.json()
+            region = acc.get("region", "new-york")
+            state = acc.get("state","?")
+            lines.append(f"region={region}  state={state}")
+        elif rp.status_code == 401:
+            return False, "401 Unauthorised — token is wrong or expired"
+        elif rp.status_code == 404:
+            return False, "404 Account not found"
+    except Exception as e:
+        lines.append(f"ERROR: {e}")
+
+    client_base = f"https://mt-client-api-v1.{region}.agiliumtrade.ai"
+    info_url = f"{client_base}/users/current/accounts/{account_id}/account-information"
+    lines.append(f"Client API ({region})...")
+    try:
+        rc = requests.get(info_url, headers=headers, timeout=8)
+        lines.append(f"HTTP {rc.status_code}")
+        if rc.status_code == 200:
+            d = rc.json()
+            bal = d.get("balance","?")
+            cur = d.get("currency","USD")
+            name = d.get("name","?")
+            return True, f"Connected — {name}  Balance: {bal} {cur}"
+    except Exception as e:
+        lines.append(f"ERROR: {e}")
+
+    return False, "\n".join(lines)
+
+def deploy_mt5_account(token:str, account_id:str) -> Tuple[bool,str]:
+    url = f"{_MA_PROVISION_URL}/users/current/accounts/{account_id}/deploy"
+    try:
+        r = requests.post(url, headers={"auth-token":token}, timeout=10)
+        if r.status_code in (200,204):
+            return True,"Deploy sent. Wait 30s then Test again."
         else:
-            st.session_state.cloud_sync = None
+            return False,f"Deploy failed HTTP {r.status_code}"
+    except Exception as e:
+        return False,f"Deploy error: {e}"
 
-    if "trade_manager" not in st.session_state:
-        st.session_state.trade_manager = TradeManager(
-            strategy="split_15_10",
-            data_dir=os.path.join(os.path.dirname(__file__), "data"),
-            cloud_sync=st.session_state.cloud_sync,
-        )
+# ============================================================
+# FORMATTING
+# ============================================================
+def fmt_price(v, sym=""):
+    if v is None or (isinstance(v,float) and pd.isna(v)):
+        return "—"
+    s = norm(sym)
+    return f"{float(v):.3f}" if s in ("USDJPY","XAUUSD","BTCUSD") else f"{float(v):.5f}"
 
-    # ── Adaptive Learner ──
-    if "adaptive_learner" not in st.session_state:
-        st.session_state.adaptive_learner = AdaptiveLearner(
-            data_dir=os.path.join(os.path.dirname(__file__), "data")
-        )
+def fmt_num(v, d=2):
+    if v is None or (isinstance(v,float) and pd.isna(v)):
+        return "—"
+    return f"{float(v):.{d}f}"
 
-    if "risk_manager" not in st.session_state:
-        st.session_state.risk_manager = RiskManager(initial_balance=10000)
-    if "signals_history" not in st.session_state:
-        st.session_state.signals_history = []
-    if "tp_strategy" not in st.session_state:
-        st.session_state.tp_strategy = "split_15_10"
-    if "balance" not in st.session_state:
-        st.session_state.balance = 10000.0
+def fmt_rr(v):
+    if v is None or (isinstance(v,float) and pd.isna(v)):
+        return "—"
+    return f"1:{float(v):.2f}"
 
-    # ── Grok xAI Engine ──
-    if "grok" not in st.session_state:
-        st.session_state.grok = get_grok_engine()
-    if "grok_chat_history" not in st.session_state:
-        st.session_state.grok_chat_history = []
-    if "active_symbol" not in st.session_state:
-        st.session_state.active_symbol = "XAUUSD"
+def score_to_grade(s):
+    if s >= 90:
+        return "A+"
+    if s >= 80:
+        return "A"
+    if s >= 70:
+        return "B"
+    if s >= 60:
+        return "C"
+    return "D"
 
-    # ── Unified Engine (Callisto + Grok combined brain) ──
-    if "unified_engine" not in st.session_state:
-        st.session_state.unified_engine = get_unified_engine(
-            grok_engine=st.session_state.grok, capital=1200.0
-        )
+def grade_color(g):
+    return {"A+":"#00d4aa","A":"#10b981","B":"#84cc16","C":"#f59e0b","D":"#ef4444"}.get(g,"#8b9ab0")
 
-    # ── Auto-Telegram tracker (prevent duplicate sends) ──
-    if "tg_sent_signals" not in st.session_state:
-        st.session_state.tg_sent_signals = {}  # {symbol_direction_score: timestamp}
+def market_is_open(symbol):
+    now = pd.Timestamp.utcnow()
+    wd = now.weekday()
+    s = norm(symbol)
+    if s in FOREX_SYMBOLS:
+        if wd == 5:
+            return False,"CLOSED"
+        if wd == 6 and now.hour < 22:
+            return False,"CLOSED"
+    return True,"LIVE"
 
-    # ── Notification Manager (for sending signals to channels) ──
-    # NOTE: Telegram bot polling runs separately via bot_runner.py on Railway
-    if "notifier" not in st.session_state:
-        st.session_state.notifier = NotificationManager(
-            bot_token=TELEGRAM_BOT_TOKEN,
-            private_channel_id=TELEGRAM_PRIVATE_CHANNEL_ID,
-            public_channel_id=TELEGRAM_PUBLIC_CHANNEL_ID,
-        )
-    st.session_state.telegram_bot = None
+def is_xau_session_ok(ts):
+    h = int(ts.hour)
+    return any(a <= h <= b for a,b in XAU_SESSIONS_UTC)
 
-init_state()
+def session_score(symbol:str, ts:pd.Timestamp) -> Tuple[int,str]:
+    h = ts.hour
+    s = norm(symbol)
+    preferred = PAIR_SESSIONS.get(s, ["London","NewYork"])
+    if 12 <= h < 16 and "Overlap" in preferred:
+        return 15,"London/NY Overlap"
+    if SESSIONS["London"][0] <= h < SESSIONS["London"][1] and "London" in preferred:
+        return 10,"London Session"
+    if SESSIONS["NewYork"][0] <= h < SESSIONS["NewYork"][1] and "NewYork" in preferred:
+        return 10,"NY Session"
+    if "Asian" in preferred and (h >= 22 or h < 7):
+        return 5,"Asian Session (weak)"
+    if h >= 22 or h < 7:
+        return 0,"Asian Session (avoid)"
+    return 5,"Off-peak"
 
-# ═════════════════════════════════════════════════════════════
-# AUTHENTICATION GATE
-# ═════════════════════════════════════════════════════════════
+# ============================================================
+# GROK CLIENT
+# ============================================================
+def _grok(messages:List[Dict], max_tokens:int=400, temperature:float=0.25,
+          api_key:str="", model:str="") -> Optional[str]:
+    key = api_key or get_xai_key()
+    if not key:
+        return None
+    mdl = model or get_grok_model()
+    try:
+        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        payload = {
+            "model": mdl,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": float(max(0.0, min(1.0, temperature))),
+        }
+        r = requests.post("https://api.x.ai/v1/chat/completions",
+                          headers=headers, json=payload, timeout=25)
+        if r.status_code != 200:
+            try:
+                body = r.json()
+                msg = body.get("error", {}).get("message") or body.get("message") or r.text[:120]
+            except Exception:
+                msg = r.text[:120]
+            return f"[Grok {r.status_code}: {msg}]"
+        return r.json()["choices"][0]["message"]["content"].strip()
+    except Exception as exc:
+        return f"[Grok error: {exc}]"
+
+def test_grok_connection(api_key:str="") -> Tuple[bool,str]:
+    mdl = get_grok_model()
+    result = _grok([{"role":"user","content":"Reply with OK"}],
+                   max_tokens=5, temperature=0, api_key=api_key)
+    if result is None:
+        return False, "No API key"
+    if result.startswith("[Grok"):
+        return False, result
+    return True, f"Connected (model: {mdl})"
+
+@st.cache_data(ttl=90)
+def get_news_sentiment(symbol:str, xai_key:str) -> Dict[str,Any]:
+    if not xai_key:
+        return {"risk":"LOW","adj":0,"bias":"neutral","summary":"No key","events":[],"ok":False}
+    sym_name = SYMBOL_NAMES.get(norm(symbol), symbol)
+    system_msg = ("You are a forex analyst. Be concise. UTC: " + pd.Timestamp.utcnow().strftime("%Y-%m-%d %H:%M"))
+    user_msg = f"""Analyze CURRENT market news sentiment for {sym_name}.
+Return ONLY valid JSON:
+{{"risk":"HIGH|MEDIUM|LOW","adj":<int -15 to 15>,"bias":"bull|bear|neutral","summary":"<20 words>","events":["<e1>","<e2>"]}}"""
+    raw = _grok([{"role":"system","content":system_msg},{"role":"user","content":user_msg}],
+                max_tokens=200, temperature=0.1, api_key=xai_key)
+    if not raw or raw.startswith("[Grok error"):
+        return {"risk":"LOW","adj":0,"bias":"neutral","summary":raw or "Unavailable","events":[],"ok":False}
+    try:
+        obj = json.loads(re.sub(r"```json|```","",raw).strip())
+        return {"risk":obj.get("risk","LOW"),"adj":int(obj.get("adj",0)),"bias":obj.get("bias","neutral"),
+                "summary":obj.get("summary",""),"events":obj.get("events",[]),"ok":True}
+    except:
+        return {"risk":"LOW","adj":0,"bias":"neutral","summary":raw[:100],"events":[],"ok":False}
+
+def get_ai_trade_advice(plan, df:pd.DataFrame, live_health:Optional[Dict],
+                        news:Optional[Dict], user_question:str="") -> str:
+    key = get_xai_key()
+    if not key:
+        return "No xAI key."
+    row = df.iloc[-1]
+    recent = df.tail(10)[["open","high","low","close"]].round(5).to_string(index=False)
+    h_info = (f"R={live_health['r_now']:+.2f}, {live_health['status']}"
+              if live_health else "not in trade")
+    n_info = (f"Risk={news['risk']}, {news['summary']}" if (news and news.get("ok")) else "no news")
+    q_line = f"\nQuestion: {user_question}" if user_question.strip() else ""
+    msg = f"""Trade: {plan.symbol} {plan.direction}
+Entry={fmt_price(plan.entry,plan.symbol)} SL={fmt_price(plan.sl,plan.symbol)}
+TP1={fmt_price(plan.tp1,plan.symbol)} TP2={fmt_price(plan.tp2,plan.symbol)}
+Score={plan.setup_score} ({plan.final_grade})
+Price={fmt_price(float(row['close']),plan.symbol)} RSI={fmt_num(row.get('rsi14'),1)}
+Health: {h_info}
+News: {n_info}
+Last 10 bars:
+{recent}{q_line}
+-> HOLD/EXIT/MOVE SL?"""
+    return _grok([{"role":"system","content":"You are a forex risk manager. Be concise."},
+                  {"role":"user","content":msg}],
+                 max_tokens=300, temperature=0.3, api_key=key) or "Empty."
+
+# ============================================================
+# DATA & INDICATORS
+# ============================================================
+def td_get(endpoint:str, params:Dict) -> Dict:
+    key = get_td_key()
+    if not key:
+        raise ValueError("No Twelve Data key")
+    url = f"https://api.twelvedata.com/{endpoint}"
+    p = dict(params)
+    p["apikey"] = key
+    r = requests.get(url, params=p, timeout=20)
+    r.raise_for_status()
+    data = r.json()
+    if isinstance(data,dict) and data.get("status")=="error":
+        raise ValueError(data.get("message","Error"))
+    return data
+
+def parse_td(values:List[Dict]) -> pd.DataFrame:
+    df = pd.DataFrame(values)
+    if df.empty:
+        return df
+    col = "datetime" if "datetime" in df.columns else "date"
+    df["time"] = pd.to_datetime(df[col], utc=True, errors="coerce")
+    for c in ["open","high","low","close","volume"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    return df.sort_values("time").dropna(subset=["time","open","high","low","close"]).reset_index(drop=True)
+
+@st.cache_data(ttl=60)
+def fetch_bars(symbol:str, interval:str, bars:int, td_key:str) -> pd.DataFrame:
+    data = td_get("time_series", {"symbol":to_api_symbol(symbol),"interval":interval,
+                                  "outputsize":int(bars),"timezone":"UTC","order":"ASC"})
+    v = data.get("values",[])
+    if not v:
+        raise ValueError("No bars")
+    return parse_td(v)
+
+def add_indicators(df:pd.DataFrame) -> pd.DataFrame:
+    x = df.copy()
+    x["ema20"] = x["close"].ewm(span=20,adjust=False).mean()
+    x["ema50"] = x["close"].ewm(span=50,adjust=False).mean()
+    x["ema200"] = x["close"].ewm(span=200,adjust=False).mean()
+    tr = pd.concat([x["high"]-x["low"],
+                    (x["high"]-x["close"].shift()).abs(),
+                    (x["low"]-x["close"].shift()).abs()],axis=1).max(axis=1)
+    x["atr14"] = tr.rolling(14).mean()
+    delta = x["close"].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    x["rsi14"] = 100-(100/(1+gain.rolling(14).mean()/loss.rolling(14).mean().replace(0,np.nan)))
+    ema12 = x["close"].ewm(span=12,adjust=False).mean()
+    ema26 = x["close"].ewm(span=26,adjust=False).mean()
+    x["macd"] = ema12 - ema26
+    x["macd_sig"] = x["macd"].ewm(span=9,adjust=False).mean()
+    x["macd_hist"] = x["macd"] - x["macd_sig"]
+    x["bb_mid"] = x["close"].rolling(20).mean()
+    bb_std = x["close"].rolling(20).std()
+    x["bb_upper"] = x["bb_mid"] + 2*bb_std
+    x["bb_lower"] = x["bb_mid"] - 2*bb_std
+    x["bb_width"] = (x["bb_upper"]-x["bb_lower"])/x["bb_mid"]
+    x["hh20"] = x["high"].rolling(20).max()
+    x["ll20"] = x["low"].rolling(20).min()
+    x["slope20"] = x["ema20"].diff(5)
+    body = (x["close"]-x["open"]).abs()
+    upper = x["high"] - x[["close","open"]].max(axis=1)
+    lower = x[["close","open"]].min(axis=1) - x["low"]
+    x["pin_bull"] = (lower > 2*body) & (upper < 0.3*body)
+    x["pin_bear"] = (upper > 2*body) & (lower < 0.3*body)
+    x["engulf_bull"] = (x["close"]>x["open"]) & (x["close"].shift()<=x["open"].shift()) & \
+                       (x["close"]>x["open"].shift()) & (x["open"]<x["close"].shift())
+    x["engulf_bear"] = (x["close"]<x["open"]) & (x["close"].shift()>=x["open"].shift()) & \
+                       (x["close"]<x["open"].shift()) & (x["open"]>x["close"].shift())
+    return x
+
+def trend_bias(df:pd.DataFrame) -> str:
+    r = df.iloc[-1]
+    if r["ema20"] > r["ema50"] > r["ema200"] and r["macd_hist"] > 0:
+        return "bull"
+    if r["ema20"] < r["ema50"] < r["ema200"] and r["macd_hist"] < 0:
+        return "bear"
+    if r["ema20"] > r["ema50"] > r["ema200"]:
+        return "bull_weak"
+    if r["ema20"] < r["ema50"] < r["ema200"]:
+        return "bear_weak"
+    return "neutral"
+
+def detect_sweep(df:pd.DataFrame, symbol:str) -> Dict:
+    if len(df) < 8:
+        return {"detected":False,"severity":"LOW","desc":"Insufficient"}
+    row = df.iloc[-1]
+    prev = df.iloc[-6:-1]
+    atr = row.get("atr14")
+    if pd.isna(atr) or atr <= 0:
+        return {"detected":False,"severity":"LOW","desc":"ATR unavailable"}
+    rh = prev["high"].max()
+    rl = prev["low"].min()
+    if row["high"] > rh and row["close"] < rh:
+        sev = "HIGH" if (row["high"]-rh)/atr > 1.2 else "MEDIUM"
+        return {"detected":True,"severity":sev,"desc":f"Upper sweep"}
+    if row["low"] < rl and row["close"] > rl:
+        sev = "HIGH" if (rl-row["low"])/atr > 1.2 else "MEDIUM"
+        return {"detected":True,"severity":sev,"desc":f"Lower sweep"}
+    return {"detected":False,"severity":"LOW","desc":"No sweep"}
+
+# ============================================================
+# PLAN DATACLASS
+# ============================================================
+@dataclass
+class Plan:
+    symbol:str
+    regime:str = "insufficient"
+    strategy:str = "No Strategy"
+    direction:str = "Wait"
+    execution_status:str = "Wait"
+    setup_score:int = 20
+    setup_grade:str = "D"
+    entry:Optional[float] = None
+    sl:Optional[float] = None
+    tp1:Optional[float] = None
+    tp2:Optional[float] = None
+    tp3:Optional[float] = None
+    rr:Optional[float] = None
+    reason:str = "No valid setup"
+    entry_reasons:List[str] = field(default_factory=list)
+    exit_conditions:List[str] = field(default_factory=list)
+    score_breakdown:Dict[str,int] = field(default_factory=dict)
+    confluence_count:int = 0
+    confluence_needed:int = 3
+    session_label:str = ""
+    session_score:int = 0
+    mtf_aligned:bool = False
+    base_lot:float = 0.0
+    suggested_lot:float = 0.0
+    news_adj:int = 0
+    news_risk:str = "LOW"
+    news_bias:str = "neutral"
+    news_summary:str = ""
+    news_events:List[str] = field(default_factory=list)
+    news_ok:bool = False
+    final_score:int = 20
+    final_grade:str = "D"
+
+    def to_dict(self):
+        return self.__dict__.copy()
+
+# ============================================================
+# SCORING ENGINE (7-component, max 100)
+# ============================================================
+def _score_plan(row:pd.Series, prev_row:pd.Series, df:pd.DataFrame,
+                direction:str, rr:float, symbol:str) -> Tuple[int, Dict[str,int], int, int]:
+    """Returns (total_score, breakdown, confluence, session_pts)."""
+    bd: Dict[str,int] = {}
+
+    # 1. EMA stack (20 pts)
+    if direction == "Buy":
+        bd["EMA Stack"] = 20 if row["ema20"]>row["ema50"]>row["ema200"] else \
+                          10 if row["ema20"]>row["ema50"] else 0
+    else:
+        bd["EMA Stack"] = 20 if row["ema20"]<row["ema50"]<row["ema200"] else \
+                          10 if row["ema20"]<row["ema50"] else 0
+
+    # 2. Pullback (15 pts)
+    dist = abs(row["close"]-row["ema20"])/max(row["atr14"],1e-9)
+    bd["Pullback"] = 15 if dist<=0.4 else 10 if dist<=0.7 else 5 if dist<=1.0 else 0
+
+    # 3. MACD (15 pts)
+    if direction == "Buy":
+        bd["MACD"] = 15 if row["macd_hist"]>0 and row["macd_hist"]>prev_row["macd_hist"] else \
+                      8 if row["macd_hist"]>0 else 0
+    else:
+        bd["MACD"] = 15 if row["macd_hist"]<0 and row["macd_hist"]<prev_row["macd_hist"] else \
+                      8 if row["macd_hist"]<0 else 0
+
+    # 4. RSI (10 pts)
+    rsi = row["rsi14"]
+    bd["RSI"] = 10 if 40<=rsi<=60 else 5 if 30<=rsi<=70 else 0
+
+    # 5. Candle pattern (10 pts)
+    candle = 0
+    if direction=="Buy" and (row.get("pin_bull",False) or row.get("engulf_bull",False)):
+        candle = 10
+    if direction=="Sell" and (row.get("pin_bear",False) or row.get("engulf_bear",False)):
+        candle = 10
+    bd["Candle"] = candle
+
+    # 6. R:R (20 pts)
+    bd["R:R"] = 20 if rr>=2.5 else 15 if rr>=2.0 else 10 if rr>=1.5 else 5 if rr>=1.2 else 0
+
+    # 7. Session (10 pts)
+    sess_pts, _ = session_score(symbol, row.get("time", pd.Timestamp.utcnow()))
+    bd["Session"] = sess_pts
+
+    total = sum(bd.values())
+    confluence = sum(1 for k,v in bd.items() if k!="Session" and v>0)
+    return min(total,100), bd, confluence, sess_pts
+
+# ============================================================
+# REGIME
+# ============================================================
+def get_regime(df:pd.DataFrame) -> str:
+    if len(df) < 220:
+        return "insufficient"
+    r = df.iloc[-1]
+    if pd.isna(r["atr14"]) or r["atr14"] <= 0:
+        return "insufficient"
+    if r["ema20"]>r["ema50"]>r["ema200"] and r["slope20"]>0:
+        return "trend_up"
+    if r["ema20"]<r["ema50"]<r["ema200"] and r["slope20"]<0:
+        return "trend_down"
+    if r["bb_width"]<0.005:
+        return "squeeze"
+    if 40<=r["rsi14"]<=60:
+        return "range"
+    return "mean_revert"
+
+def _empty(symbol, regime, reason="No valid setup"):
+    return Plan(symbol=symbol, regime=regime, reason=reason, entry_reasons=[reason])
+
+# ============================================================
+# PLAN BUILDERS
+# ============================================================
+def _get_htf_bias(symbol:str, td_key:str) -> str:
+    try:
+        df1h = add_indicators(fetch_bars(symbol,"1h",260,td_key))
+        return trend_bias(df1h)
+    except:
+        return "neutral"
+
+def _trend_plan(df:pd.DataFrame, symbol:str, regime:str, htf_bias:str) -> Plan:
+    row = df.iloc[-1]
+    prev = df.iloc[-2]
+    atr = row["atr14"]
+    close = row["close"]
+    ema20 = row["ema20"]
+    p = _empty(symbol, regime)
+
+    if pd.isna(atr) or atr <= 0:
+        return p
+
+    direction = "Buy" if regime=="trend_up" else "Sell"
+    mtf_ok = (htf_bias in ("bull","bull_weak") and direction=="Buy") or \
+             (htf_bias in ("bear","bear_weak") and direction=="Sell") or \
+             htf_bias=="neutral"
+    if not mtf_ok:
+        p.reason = f"1H bias opposes {direction}"
+        p.entry_reasons = [p.reason]
+        return p
+
+    dist = abs(close-ema20)/atr
+    if dist > 1.0:
+        p.reason = f"Too extended"
+        return p
+
+    touched_pb = dist <= 0.75
+    resumed = (close>prev["high"]) if direction=="Buy" else (close<prev["low"])
+    if not (touched_pb or resumed):
+        return p
+
+    if direction=="Buy":
+        entry = float(close)
+        sl = float(min(df.tail(6)["low"].min(), ema20-0.5*atr))
+        risk = entry-sl
+        tp1 = float(entry+risk)
+        tp2 = float(entry+2.0*risk)
+        tp3 = float(entry+3.0*risk)
+    else:
+        entry = float(close)
+        sl = float(max(df.tail(6)["high"].max(), ema20+0.5*atr))
+        risk = sl-entry
+        tp1 = float(entry-risk)
+        tp2 = float(entry-2.0*risk)
+        tp3 = float(entry-3.0*risk)
+
+    rr = abs(tp2-entry)/max(abs(entry-sl),1e-9)
+    score, breakdown, confluence, sess_pts = _score_plan(row,prev,df,direction,rr,symbol)
+    sess_pts2, sess_name = session_score(symbol, row.get("time",pd.Timestamp.utcnow()))
+    ready = (score>=70 and rr>=1.5 and confluence>=3)
+
+    p2 = Plan(
+        symbol=symbol, regime=regime, strategy="Trend Continuation", direction=direction,
+        execution_status="Ready to Enter" if ready else "Wait",
+        setup_score=score, setup_grade=score_to_grade(score),
+        entry=entry, sl=sl, tp1=tp1, tp2=tp2, tp3=tp3, rr=float(rr),
+        score_breakdown=breakdown, confluence_count=confluence,
+        session_label=sess_name, session_score=sess_pts2, mtf_aligned=mtf_ok,
+        reason=f"{regime} continuation"
+    )
+    p2.entry_reasons = [
+        f"EMA: {breakdown['EMA Stack']}/20",
+        f"MACD: {breakdown['MACD']}/15",
+        f"RSI: {breakdown['RSI']}/10",
+        f"Pullback: {breakdown['Pullback']}/15",
+        f"R:R: {breakdown['R:R']}/20",
+        f"Session: {sess_name} ({sess_pts2}/10)",
+    ]
+    p2.exit_conditions = [
+        f"TP1 {fmt_price(tp1,symbol)}: 50%",
+        f"TP2 {fmt_price(tp2,symbol)}: 40%",
+        f"TP3 {fmt_price(tp3,symbol)}: 10%",
+        f"SL {fmt_price(sl,symbol)}: exit",
+    ]
+    return p2
+
+def _mean_rev_plan(df:pd.DataFrame, symbol:str, regime:str) -> Plan:
+    row = df.iloc[-1]
+    prev = df.iloc[-2]
+    atr = row["atr14"]
+    if pd.isna(atr) or atr <= 0:
+        return _empty(symbol, regime)
+
+    close = row["close"]
+    ema20 = row["ema20"]
+    dev = (close-ema20)/atr
+
+    if abs(dev) < 1.3:
+        return _empty(symbol, regime, "Deviation too small")
+
+    bb_touch = (close<=row["bb_lower"] and dev<0) or (close>=row["bb_upper"] and dev>0)
+    direction = "Sell" if dev>0 else "Buy"
+    entry = float(close)
+
+    if direction=="Buy":
+        sl = float(close-0.85*atr)
+        tp1 = float(ema20)
+        tp2 = float(close+1.7*atr)
+    else:
+        sl = float(close+0.85*atr)
+        tp1 = float(ema20)
+        tp2 = float(close-1.7*atr)
+
+    rr = abs(tp2-entry)/max(abs(entry-sl),1e-9)
+    score, breakdown, confluence, sess_pts = _score_plan(row,prev,df,direction,rr,symbol)
+    base = min(20, int(abs(dev)*8))
+    if bb_touch:
+        base += 10
+    score = min(100, score+base)
+    sess_pts2, sess_name = session_score(symbol, row.get("time",pd.Timestamp.utcnow()))
+    ready = (score>=65 and rr>=1.3 and confluence>=2)
+
+    p = Plan(
+        symbol=symbol, regime=regime, strategy="Mean Reversion", direction=direction,
+        execution_status="Ready to Enter" if ready else "Wait",
+        setup_score=score, setup_grade=score_to_grade(score),
+        entry=entry, sl=sl, tp1=tp1, tp2=tp2, rr=float(rr),
+        score_breakdown=breakdown, confluence_count=confluence, confluence_needed=2,
+        session_label=sess_name, session_score=sess_pts2, mtf_aligned=True,
+        reason="Mean reversion"
+    )
+    p.entry_reasons = [
+        f"Deviation {abs(dev):.2f} ATR",
+        f"BB touch: {'Yes' if bb_touch else 'No'}",
+        f"RSI: {breakdown['RSI']}/10",
+    ]
+    p.exit_conditions = [
+        f"TP1 {fmt_price(tp1,symbol)}: target",
+        f"TP2 {fmt_price(tp2,symbol)}: extended",
+        f"SL {fmt_price(sl,symbol)}: exit",
+    ]
+    return p
+
+def _squeeze_plan(df:pd.DataFrame, symbol:str) -> Plan:
+    row = df.iloc[-1]
+    prev = df.iloc[-2]
+    atr = row["atr14"]
+
+    if pd.isna(atr) or atr <= 0:
+        return _empty(symbol, "squeeze")
+
+    direction = "Buy" if row["close"]>row["bb_upper"] and row["macd_hist"]>0 else \
+                "Sell" if row["close"]<row["bb_lower"] and row["macd_hist"]<0 else None
+    if direction is None:
+        return _empty(symbol, "squeeze", "Squeeze present")
+
+    entry = float(row["close"])
+    if direction=="Buy":
+        sl = float(row["bb_mid"]-0.5*atr)
+        tp1 = float(entry+atr)
+        tp2 = float(entry+2*atr)
+    else:
+        sl = float(row["bb_mid"]+0.5*atr)
+        tp1 = float(entry-atr)
+        tp2 = float(entry-2*atr)
+
+    rr = abs(tp2-entry)/max(abs(entry-sl),1e-9)
+    score, breakdown, confluence, _ = _score_plan(row,prev,df,direction,rr,symbol)
+    score = min(100, score+15)
+    sess_pts2, sess_name = session_score(symbol, row.get("time",pd.Timestamp.utcnow()))
+    ready = (score>=65 and rr>=1.3)
+
+    p = Plan(
+        symbol=symbol, regime="squeeze", strategy="BB Squeeze Breakout", direction=direction,
+        execution_status="Ready to Enter" if ready else "Wait",
+        setup_score=score, setup_grade=score_to_grade(score),
+        entry=entry, sl=sl, tp1=tp1, tp2=tp2, rr=float(rr),
+        score_breakdown=breakdown, confluence_count=confluence, confluence_needed=2,
+        session_label=sess_name, session_score=sess_pts2, mtf_aligned=True,
+        reason="BB Squeeze"
+    )
+    p.entry_reasons = [
+        f"Squeeze breakout {direction}",
+        f"MACD: {breakdown['MACD']}/15",
+    ]
+    p.exit_conditions = [
+        f"TP1 {fmt_price(tp1,symbol)}: 1 ATR",
+        f"TP2 {fmt_price(tp2,symbol)}: 2 ATR",
+        f"SL {fmt_price(sl,symbol)}: back in BB",
+    ]
+    return p
+
+def _xau_plan(df5:pd.DataFrame, df15:pd.DataFrame, df1h:pd.DataFrame, symbol:str) -> Plan:
+    row = df5.iloc[-1]
+    prev = df5.iloc[-2]
+    atr = row["atr14"]
+    p = _empty(symbol, "gold_scalp")
+
+    if pd.isna(atr) or atr <= 0:
+        return p
+
+    b5 = trend_bias(df5)
+    b15 = trend_bias(df15)
+    b1h = trend_bias(df1h)
+
+    aligned_bull = all(b in ("bull","bull_weak") for b in [b5,b15,b1h])
+    aligned_bear = all(b in ("bear","bear_weak") for b in [b5,b15,b1h])
+
+    dist = abs(row["close"]-row["ema20"])/atr
+    too_ext = dist > 0.9
+    last3 = df5.tail(3)
+    vert = (last3["close"]-last3["open"]).abs().sum() > atr*1.8
+
+    rh = df5.iloc[-6:-1]["high"].max()
+    rl = df5.iloc[-6:-1]["low"].min()
+    bull_sw = row["low"]<rl and row["close"]>rl
+    bear_sw = row["high"]>rh and row["close"]<rh
+
+    long_t = aligned_bull and not too_ext and not vert and (
+        (row["close"]>row["ema20"] and prev["close"]<=prev["ema20"]) or bull_sw)
+    short_t = aligned_bear and not too_ext and not vert and (
+        (row["close"]<row["ema20"] and prev["close"]>=prev["ema20"]) or bear_sw)
+
+    if not is_xau_session_ok(row["time"]):
+        p.reason = "XAU session filter"
+        return p
+
+    if not long_t and not short_t:
+        p.entry_reasons = [f"5m={b5} 15m={b15} 1h={b1h}"]
+        return p
+
+    tp_pts = 20.0
+    if long_t:
+        entry = float(row["close"])
+        sl = float(min(df5.tail(8)["low"].min(), entry-0.8*atr))
+        tp1 = float(entry+tp_pts)
+        tp2 = float(entry+35.0)
+        risk = entry-sl
+        rr = (tp1-entry)/max(risk,1e-9)
+        direction = "Buy"
+    else:
+        entry = float(row["close"])
+        sl = float(max(df5.tail(8)["high"].max(), entry+0.8*atr))
+        tp1 = float(entry-tp_pts)
+        tp2 = float(entry-35.0)
+        risk = sl-entry
+        rr = (entry-tp1)/max(risk,1e-9)
+        direction = "Sell"
+
+    if rr < 1.2:
+        p.reason = "TP20pts SL mismatch"
+        return p
+
+    score, breakdown, confluence, _ = _score_plan(row,prev,df5,direction,rr,symbol)
+    mtf_bonus = 20 if (aligned_bull or aligned_bear) else 0
+    sw_bonus = 15 if (bull_sw or bear_sw) else 0
+    score = min(100, score+mtf_bonus+sw_bonus)
+    sess_pts2, sess_name = session_score(symbol, row.get("time",pd.Timestamp.utcnow()))
+
+    p2 = Plan(
+        symbol=symbol, regime="gold_scalp", strategy="XAU 20pt Scalp", direction=direction,
+        execution_status="Ready to Enter" if score>=75 else "Wait",
+        setup_score=score, setup_grade=score_to_grade(score),
+        entry=entry, sl=sl, tp1=tp1, tp2=tp2, rr=float(rr),
+        score_breakdown=breakdown, confluence_count=confluence,
+        session_label=sess_name, session_score=sess_pts2, mtf_aligned=True,
+        reason="XAU MTF aligned"
+    )
+    p2.entry_reasons = [
+        f"MTF: 5m={b5} 15m={b15} 1h={b1h}",
+        f"Sweep: {'Yes' if bull_sw or bear_sw else 'No'}",
+    ]
+    p2.exit_conditions = [
+        f"TP1 {fmt_price(tp1,symbol)}: 70%",
+        f"TP2 {fmt_price(tp2,symbol)}: runner",
+        f"SL {fmt_price(sl,symbol)}: hard exit",
+    ]
+    return p2
+
+def select_plan(symbol:str, interval:str, bars:int, td_key:str) -> Tuple[pd.DataFrame,Plan]:
+    s = norm(symbol)
+    if s == "XAUUSD":
+        df5 = add_indicators(fetch_bars(s,"5min",max(260,bars),td_key))
+        df15 = add_indicators(fetch_bars(s,"15min",max(260,bars),td_key))
+        df1h = add_indicators(fetch_bars(s,"1h",max(260,bars),td_key))
+        return df5, _xau_plan(df5,df15,df1h,s)
+    df = add_indicators(fetch_bars(s,interval,bars,td_key))
+    regime = get_regime(df)
+    if regime == "insufficient":
+        return df, _empty(s,regime)
+    htf_bias = _get_htf_bias(s, td_key) if interval not in ("1h","4h") else "neutral"
+    if regime in ("trend_up","trend_down"):
+        return df, _trend_plan(df,s,regime,htf_bias)
+    if regime == "squeeze":
+        return df, _squeeze_plan(df,s)
+    return df, _mean_rev_plan(df,s,regime)
+
+def finalize_plan(plan:Plan, balance:float, risk_pct:float) -> Plan:
+    risk_amount = balance*(risk_pct/100)
+    if plan.entry and plan.sl:
+        stop_pips = abs(plan.entry-plan.sl)/max(pip_size(plan.symbol),1e-9)
+        plan.base_lot = max(0.0,round(risk_amount/(stop_pips*pip_value(plan.symbol)),3)) if stop_pips>0 else 0.0
+    plan.suggested_lot = plan.base_lot
+    xai = get_xai_key()
+    news = get_news_sentiment(plan.symbol, xai)
+    plan.news_adj = news["adj"]
+    plan.news_risk = news["risk"]
+    plan.news_bias = news["bias"]
+    plan.news_summary = news["summary"]
+    plan.news_events = news.get("events",[])
+    plan.news_ok = news.get("ok",False)
+    plan.final_score = int(max(0,min(100,plan.setup_score+plan.news_adj)))
+    plan.final_grade = score_to_grade(plan.final_score)
+    if plan.news_risk=="HIGH" and plan.execution_status=="Ready to Enter":
+        plan.execution_status="HIGH NEWS RISK"
+    return plan
+
+# ============================================================
+# LIVE HEALTH
+# ============================================================
+def compute_live_health(entry:float, sl:float, direction:str, df:pd.DataFrame,
+                        mt5_price:Optional[float]=None) -> Dict:
+    if mt5_price and mt5_price > 0:
+        close = mt5_price
+        price_src = "MT5"
+    else:
+        close = float(df.iloc[-1]["close"])
+        price_src = "TD"
+
+    risk = abs(entry-sl)
+    if risk <= 0:
+        return {"r_now":0.0,"status":"Invalid","advice":"Stop=0","health_pct":50,"color":"#8b9ab0","price_src":price_src,"close":close}
+
+    r_now = (close-entry)/risk if direction=="Buy" else (entry-close)/risk
+    hp = int(max(5,min(95,50+r_now*25)))
+
+    if r_now >= 1.0:
+        return {"r_now":round(r_now,2),"status":"Profit","advice":"TP1 hit","health_pct":hp,"color":"#10b981","price_src":price_src,"close":close}
+    if r_now >= 0.0:
+        return {"r_now":round(r_now,2),"status":"In trade","advice":"In profit","health_pct":hp,"color":"#00d4aa","price_src":price_src,"close":close}
+    if r_now >= -0.5:
+        return {"r_now":round(r_now,2),"status":"Drawdown","advice":"Normal.","health_pct":hp,"color":"#f59e0b","price_src":price_src,"close":close}
+    if r_now >= -0.8:
+        return {"r_now":round(r_now,2),"status":"Near SL","advice":"Approaching.","health_pct":hp,"color":"#f97316","price_src":price_src,"close":close}
+    return {"r_now":round(r_now,2),"status":"SL Hit","advice":"Exit now.","health_pct":hp,"color":"#ef4444","price_src":price_src,"close":close}
+
+# ============================================================
+# CHART
+# ============================================================
+def build_chart(df:pd.DataFrame, plan:Plan, symbol:str) -> go.Figure:
+    n = min(120,len(df))
+    dfc = df.tail(n)
+    fig = make_subplots(rows=2,cols=1,shared_xaxes=True,row_heights=[0.72,0.28],
+                        vertical_spacing=0.04)
+
+    fig.add_trace(go.Candlestick(x=dfc["time"],open=dfc["open"],high=dfc["high"],
+                                  low=dfc["low"],close=dfc["close"],name="Price",
+                                  increasing_fillcolor="#10b981",increasing_line_color="#10b981",
+                                  decreasing_fillcolor="#ef4444",decreasing_line_color="#ef4444"),row=1,col=1)
+
+    for col2,color,nm in [("ema20","#00d4aa","EMA20"),("ema50","#f59e0b","EMA50"),("ema200","#8b9ab0","EMA200")]:
+        if col2 in dfc.columns:
+            fig.add_trace(go.Scatter(x=dfc["time"],y=dfc[col2],mode="lines",name=nm,
+                                     line=dict(color=color,width=1.2)),row=1,col=1)
+
+    if "bb_upper" in dfc.columns:
+        fig.add_trace(go.Scatter(x=dfc["time"],y=dfc["bb_upper"],mode="lines",name="BB Upper",
+                                 line=dict(color="rgba(99,102,241,0.4)",width=1,dash="dot")),row=1,col=1)
+        fig.add_trace(go.Scatter(x=dfc["time"],y=dfc["bb_lower"],mode="lines",name="BB Lower",
+                                 line=dict(color="rgba(99,102,241,0.4)",width=1,dash="dot"),
+                                 fill="tonexty",fillcolor="rgba(99,102,241,0.04)"),row=1,col=1)
+
+    for lbl,val,col3 in [("Entry",plan.entry,"#00d4aa"),("SL",plan.sl,"#ef4444"),
+                          ("TP1",plan.tp1,"#a78bfa"),("TP2",plan.tp2,"#10b981")]:
+        if val:
+            fig.add_hline(y=val,line=dict(color=col3,width=1,dash="dot"),
+                           annotation_text=lbl,annotation_font_color=col3,row=1,col=1)
+
+    if "macd_hist" in dfc.columns:
+        colors = ["#10b981" if v>=0 else "#ef4444" for v in dfc["macd_hist"]]
+        fig.add_trace(go.Bar(x=dfc["time"],y=dfc["macd_hist"],name="MACD Hist",
+                              marker_color=colors,opacity=0.7),row=2,col=1)
+        fig.add_trace(go.Scatter(x=dfc["time"],y=dfc["macd"],mode="lines",name="MACD",
+                                 line=dict(color="#00d4aa",width=1)),row=2,col=1)
+        fig.add_trace(go.Scatter(x=dfc["time"],y=dfc["macd_sig"],mode="lines",name="Signal",
+                                 line=dict(color="#f59e0b",width=1)),row=2,col=1)
+
+    fig.update_layout(template="plotly_dark",height=500,margin=dict(l=8,r=8,t=8,b=8),
+                      xaxis_rangeslider_visible=False,
+                      legend=dict(orientation="h",yanchor="bottom",y=1.01,xanchor="right",x=1))
+    return fig
+
+# ============================================================
+# PANEL HELPERS
+# ============================================================
+def render_kv_panel(title, rows):
+    html = ["<div class='panel'>",f"<div class='mono-title'>{title}</div>"]
+    for k,v,klass in rows:
+        c = f" class='{klass}'" if klass else ""
+        html.append(f"<div class='kv'><span class='muted'>{k}</span><span{c}>{v}</span></div>")
+    html.append("</div>")
+    st.markdown("".join(html),unsafe_allow_html=True)
+
+def render_signal_badge(direction, status):
+    if "HIGH NEWS" in status:
+        cls, text = "signal-sell", "HIGH NEWS"
+    elif status != "Ready to Enter":
+        cls, text = "signal-wait", "WAIT"
+    elif direction == "Buy":
+        cls, text = "signal-buy", "BUY"
+    elif direction == "Sell":
+        cls, text = "signal-sell", "SELL"
+    else:
+        cls, text = "signal-wait", "WAIT"
+    st.markdown(f"<div class='signal-box {cls}'>{text}</div>",unsafe_allow_html=True)
+
+def render_score_panel(plan:Plan, df:pd.DataFrame, active_entry=None, active_sl=None, active_dir=None):
+    gc = grade_color(plan.final_grade)
+    adj = plan.news_adj
+    adj_html = (f"<span style='color:#10b981;'>+{adj}</span>" if adj>0
+                else f"<span style='color:#ef4444;'>{adj}</span>" if adj<0
+                else "<span style='color:#8b9ab0;'>0</span>")
+
+    filled = plan.confluence_count
+    total = 6
+    conf_color = "#10b981" if filled>=4 else "#f59e0b" if filled>=2 else "#ef4444"
+    conf_dots = "".join([f"<span style='color:{conf_color};'>●</span>" if i<filled
+                         else "<span style='color:#2a3441;'>●</span>" for i in range(total)])
+
+    bd_html = ""
+    for k,v in plan.score_breakdown.items():
+        maxv = {"EMA Stack":20,"Pullback":15,"MACD":15,"RSI":10,"Candle":10,"R:R":20,"Session":10}.get(k,10)
+        pct = int(v/max(maxv,1)*100)
+        bar_col = "#10b981" if pct>=70 else "#f59e0b" if pct>=40 else "#ef4444"
+        bd_html += (f"<div style='display:flex;align-items:center;gap:8px;margin:3px 0;font-size:11px;'>"
+                    f"<span style='color:#8b9ab0;width:70px;flex-shrink:0;'>{k}</span>"
+                    f"<div style='background:#131a22;border-radius:3px;flex:1;height:5px;'>"
+                    f"<div style='width:{pct}%;height:100%;background:{bar_col};border-radius:3px;'></div></div>"
+                    f"<span style='color:{bar_col};width:28px;text-align:right;font-family:Space Mono,monospace;'>{v}</span>"
+                    f"</div>")
+
+    st.markdown(f"""<div class='panel'>
+      <div class='mono-title'>SIGNAL SCORE</div>
+      <div style='display:flex;align-items:center;gap:14px;margin-bottom:8px;flex-wrap:wrap;'>
+        <div><div style='font-size:10px;color:#8b9ab0;'>TECH</div>
+          <div style='font-family:Space Mono,monospace;font-size:26px;font-weight:700;color:{grade_color(plan.setup_grade)};'>{plan.setup_score}</div></div>
+        <div style='color:#4a5568;font-size:18px;'>+</div>
+        <div><div style='font-size:10px;color:#8b9ab0;'>NEWS</div>
+          <div style='font-family:Space Mono,monospace;font-size:26px;font-weight:700;'>{adj_html}</div></div>
+        <div style='color:#4a5568;font-size:18px;'>=</div>
+        <div><div style='font-size:10px;color:#8b9ab0;'>FINAL</div>
+          <div style='font-family:Space Mono,monospace;font-size:26px;font-weight:700;color:{gc};'>
+            {plan.final_score}<span style='font-size:14px;'> {plan.final_grade}</span></div></div>
+      </div>
+      <div style='background:#131a22;border-radius:4px;height:5px;margin-bottom:10px;overflow:hidden;'>
+        <div style='height:100%;border-radius:4px;background:{gc};width:{plan.final_score}%;'></div></div>
+      <div style='margin-bottom:8px;'>
+        <span style='font-size:10px;color:#8b9ab0;font-family:Space Mono,monospace;'>CONFLUENCE </span>
+        {conf_dots}
+        <span style='font-size:10px;color:{conf_color};font-family:Space Mono,monospace;'> {filled}/{total}</span>
+      </div>
+      {bd_html}
+      <div style='font-size:11px;color:#8b9ab0;border-top:1px solid rgba(255,255,255,0.05);padding-top:6px;margin-top:6px;'>
+        <b style='color:#e8edf2;'>Session:</b> {plan.session_label}
+      </div>
+    </div>""",unsafe_allow_html=True)
+
+    live_health = None
+    if active_entry and active_sl and active_dir:
+        _ma_tick = fetch_mt5_price(plan.symbol,get_ma_token(),get_ma_account()) if (get_ma_token() and get_ma_account()) else None
+        _mt5_price = _ma_tick["bid"] if _ma_tick else None
+        live_health = compute_live_health(active_entry,active_sl,active_dir,df,mt5_price=_mt5_price)
+        hc = live_health["color"]
+        hp = live_health["health_pct"]
+        src_label = live_health.get("price_src","TD")
+        src_col = "#00d4aa" if src_label=="MT5" else "#f59e0b"
+        src_note = f"<span style='font-size:9px;color:{src_col};margin-left:6px;'>price: {src_label}</span>"
+        st.markdown(f"""<div class='panel'>
+          <div class='mono-title'>LIVE HEALTH{src_note}</div>
+          <div style='display:flex;align-items:center;gap:14px;margin-bottom:8px;'>
+            <div style='font-family:Space Mono,monospace;font-size:26px;font-weight:700;color:{hc};'>{hp}%</div>
+            <div><div style='font-size:13px;font-weight:600;color:{hc};'>{live_health['status']}</div>
+              <div style='font-size:11px;color:#8b9ab0;'>R = {live_health['r_now']:+.2f}</div></div>
+          </div>
+          <div style='background:#131a22;border-radius:4px;height:5px;margin-bottom:8px;overflow:hidden;'>
+            <div style='height:100%;border-radius:4px;background:{hc};width:{hp}%;'></div></div>
+          <div style='font-size:12px;color:#e8edf2;padding:8px;background:#131a22;border-radius:5px;'>{live_health['advice']}</div>
+        </div>""",unsafe_allow_html=True)
+    else:
+        st.markdown("""<div class='panel' style='border-color:rgba(255,255,255,0.04);'>
+          <div class='mono-title' style='color:#4a5568;'>LIVE HEALTH</div>
+        </div>""",unsafe_allow_html=True)
+
+    _render_ai_panel(plan, df, live_health, active_entry, active_sl, active_dir)
+
+def _render_ai_panel(plan, df, live_health, active_entry, active_sl, active_dir):
+    xai = get_xai_key()
+    st.markdown("""<div style='background:#0d1117;border:1px solid rgba(99,102,241,0.2);
+        border-left:3px solid #6366f1;border-radius:8px;padding:12px 14px;margin-bottom:10px;'>
+        <div style='color:#6366f1;font-size:11px;font-family:Space Mono,monospace;
+        letter-spacing:.12em;margin-bottom:8px;'>GROK AI</div>
+        </div>""", unsafe_allow_html=True)
+
+    if not xai:
+        st.markdown("<div style='font-size:12px;color:#4a5568;margin:-6px 0 8px;'>No xAI key.</div>",unsafe_allow_html=True)
+        return
+
+    if active_entry is None:
+        st.markdown("<div style='font-size:12px;color:#4a5568;margin:-6px 0 8px;'>Enter trade to activate.</div>",unsafe_allow_html=True)
+        return
+
+    trade_key = f"ai_{plan.symbol}_{active_entry:.5f}"
+    news_dict = {"risk":plan.news_risk,"bias":plan.news_bias,"summary":plan.news_summary,"ok":plan.news_ok}
+
+    if trade_key not in st.session_state:
+        with st.spinner("Grok..."):
+            st.session_state[trade_key] = get_ai_trade_advice(plan,df,live_health,news_dict)
+
+    advice = st.session_state.get(trade_key,"")
+    if advice:
+        safe_advice = advice.replace("<","&lt;").replace(">","&gt;").replace("\n","<br>")
+        st.markdown(f"""<div class='ai-bubble'>
+            <div class='ai-header'>ANALYSIS</div>{safe_advice}</div>""",
+            unsafe_allow_html=True)
+
+    user_q = st.text_input("Ask Grok...", placeholder="SL strategy?", key=f"gq_{plan.symbol}")
+    if st.button("Ask", key=f"gb_{plan.symbol}"):
+        if user_q.strip():
+            with st.spinner("Thinking..."):
+                st.session_state[f"gr_{plan.symbol}"] = get_ai_trade_advice(plan,df,live_health,news_dict,user_q)
+        else:
+            st.warning("Type first.")
+
+    reply = st.session_state.get(f"gr_{plan.symbol}","")
+    if reply:
+        safe_reply = reply.replace("<","&lt;").replace(">","&gt;").replace("\n","<br>")
+        st.markdown(f"""<div class='ai-bubble' style='border-left-color:#0ea5e9;background:rgba(14,165,233,.06);'>
+            <div class='ai-header' style='color:#0ea5e9;'>REPLY</div>{safe_reply}</div>""",
+            unsafe_allow_html=True)
+
+def render_news_panel(plan:Plan):
+    xai = get_xai_key()
+    if not xai:
+        st.markdown("<div class='panel'><div class='mono-title' style='color:#4a5568;'>GROK NEWS</div></div>",unsafe_allow_html=True)
+        return
+
+    risk = plan.news_risk
+    adj = plan.news_adj
+    bias = plan.news_bias
+    risk_col = {"HIGH":"#ef4444","MEDIUM":"#f59e0b","LOW":"#10b981"}.get(risk,"#10b981")
+    bias_col = {"bull":"#10b981","bear":"#ef4444"}.get(bias,"#8b9ab0")
+    adj_str = (f"+{adj}" if adj>0 else str(adj))
+    adj_col = "#10b981" if adj>0 else "#ef4444" if adj<0 else "#8b9ab0"
+    safe_summary = str(plan.news_summary).replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+    evts = "".join(
+        f"<div style='font-size:11px;color:#8b9ab0;padding:2px 0;'>{str(e).replace('<','&lt;').replace('>','&gt;')}</div>"
+        for e in (plan.news_events or []))
+
+    st.markdown(f"""<div class='panel'>
+      <div class='mono-title'>GROK NEWS</div>
+      <div style='display:flex;align-items:center;gap:12px;margin-bottom:8px;'>
+        <div><span style='color:{risk_col};font-weight:700;'>{risk}</span></div>
+        <div><span style='color:{adj_col};font-weight:700;'>{adj_str}</span></div>
+        <div><span style='color:{bias_col};'>●</span> {bias}</div>
+      </div>
+      <div style='font-size:12px;color:#c7d2fe;margin-bottom:6px;'>{safe_summary}</div>
+      <div style='border-top:1px solid rgba(255,255,255,0.05);padding-top:6px;'>{evts}</div>
+    </div>""",unsafe_allow_html=True)
+
+def render_trade_tracker(plan: Plan, current_price: float, df: pd.DataFrame):
+    """Renders trade entry form + active trades. Returns (entry, sl, direction) or None."""
+    if "active_trades" not in st.session_state:
+        st.session_state.active_trades = []
+    trades = st.session_state.active_trades
+    n_trades = len(trades)
+    badge = (f" <span style='color:#00d4aa;font-size:11px;background:rgba(0,212,170,0.1);"
+             f"padding:2px 8px;border-radius:3px;'>{n_trades} open</span>") if n_trades else ""
+    st.markdown(f"<div class='panel'><div class='mono-title'>TRADE TRACKER{badge}</div>", unsafe_allow_html=True)
+
+    with st.expander("Enter New Trade", expanded=(n_trades == 0)):
+        c1, c2 = st.columns(2)
+        me = c1.number_input("Entry", value=float(plan.entry or current_price), format="%.5f", key="te_e")
+        ms = c2.number_input("Stop Loss", value=float(plan.sl or current_price), format="%.5f", key="te_s")
+        md = c1.selectbox("Direction", ["Buy", "Sell"], index=0 if plan.direction == "Buy" else 1, key="te_d")
+        ml = c2.number_input("Lot", value=float(max(plan.suggested_lot, 0.01)), format="%.3f", key="te_l")
+        tc1, tc2 = st.columns(2)
+        mtp1 = tc1.number_input("TP1", value=float(plan.tp1 or current_price), format="%.5f", key="te_tp1")
+        mtp2 = tc2.number_input("TP2", value=float(plan.tp2 or current_price), format="%.5f", key="te_tp2")
+
+        if st.button("Enter Trade", key="btn_enter"):
+            import uuid
+            new_trade = {
+                "id": str(uuid.uuid4())[:8],
+                "symbol": plan.symbol,
+                "entry": me, "sl": ms, "direction": md, "lot": ml,
+                "tp1": mtp1, "tp2": mtp2,
+                "locked_score": plan.setup_score,
+                "locked_final": plan.final_score,
+                "locked_grade": plan.setup_grade,
+            }
+            st.session_state.active_trades.append(new_trade)
+            st.success(f"Trade entered! ({plan.symbol} {md})")
+            st.rerun()
+
+    # Active trade cards
+    if not trades:
+        st.markdown("<div style='font-size:12px;color:#4a5568;padding:6px 0;'>No open trades.</div>", unsafe_allow_html=True)
+    else:
+        for t in trades:
+            tid = t.get("id", "0")
+            t_dir = t["direction"]
+            t_entry = float(t["entry"])
+            t_sl = float(t["sl"])
+            t_risk = abs(t_entry - t_sl)
+            dir_col = "#10b981" if t_dir == "Buy" else "#ef4444"
+            _move = (current_price - t_entry) if t_dir == "Buy" else (t_entry - current_price)
+            _pnl_r = _move / t_risk if t_risk > 0 else 0
+            pnl_col = "#10b981" if _pnl_r >= 0 else "#ef4444"
+
+            st.markdown(
+                f"<div style='border:1px solid rgba(255,255,255,0.07);border-radius:6px;padding:8px 10px;margin:6px 0;background:#090e14;'>"
+                f"<div style='font-size:10px;color:#8b9ab0;margin-bottom:4px;'>"
+                f"<span style='color:{dir_col};font-weight:700;'>{t_dir}</span>"
+                f" <span style='color:#4a5568;'>· {t.get('lot', 0.01)} lot · #{tid}</span></div>"
+                f"<div style='display:flex;gap:10px;font-size:12px;'>"
+                f"<div><span class='muted'>Entry</span> <b style='color:#00d4aa;font-family:Space Mono,monospace;'>{fmt_price(t_entry, plan.symbol)}</b></div>"
+                f"<div><span class='muted'>SL</span> <b style='color:#ef4444;font-family:Space Mono,monospace;'>{fmt_price(t_sl, plan.symbol)}</b></div>"
+                f"<div><span class='muted'>P&L</span> <b style='color:{pnl_col};font-family:Space Mono,monospace;'>{_pnl_r:+.2f}R</b></div>"
+                f"</div></div>",
+                unsafe_allow_html=True)
+
+            if st.button(f"Close #{tid}", key=f"btn_close_{tid}"):
+                st.session_state.active_trades = [x for x in st.session_state.active_trades if x.get("id") != tid]
+                st.rerun()
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # Return active trade for Live Health
+    for t in trades:
+        if t.get("symbol", plan.symbol) == plan.symbol:
+            return t["entry"], t["sl"], t["direction"]
+    if trades:
+        return trades[0]["entry"], trades[0]["sl"], trades[0]["direction"]
+    return None
+
+# ============================================================
+# MARKET OVERVIEW TABLE
+# ============================================================
+def build_overview_row(sym, balance, risk_pct, td_key):
+    try:
+        df, plan = select_plan(sym, "15min", 260, td_key)
+        plan = finalize_plan(plan, balance, risk_pct)
+        price = float(df["close"].iloc[-1])
+        return {"Symbol": sym, "Price": fmt_price(price, sym), "Signal": plan.direction,
+                "Status": plan.execution_status[:18], "Tech": plan.setup_score,
+                "News Adj": plan.news_adj, "Final": plan.final_score, "Grade": plan.final_grade,
+                "R:R": fmt_rr(plan.rr), "Session": plan.session_label[:15], "News": plan.news_risk}
+    except Exception as e:
+        return {"Symbol": sym, "Price": "ERR", "Signal": "—", "Status": str(e)[:18],
+                "Tech": 0, "News Adj": 0, "Final": 0, "Grade": "D", "R:R": "—", "Session": "—", "News": "—"}
+
+
+# ============================================================
+# TELEGRAM AUTO-SEND (A+ signals)
+# ============================================================
+def _maybe_send_telegram(plan: Plan, notifier):
+    """Auto-send Telegram for A+ signals with 15-min cooldown."""
+    if not notifier:
+        return
+    if plan.final_grade != "A+" or plan.execution_status != "Ready to Enter":
+        return
+    if plan.direction not in ("Buy", "Sell"):
+        return
+
+    cooldown_key = f"{plan.symbol}_{plan.direction}_{plan.final_score}"
+    sent_signals = st.session_state.get("tg_sent_signals", {})
+    now = datetime.utcnow()
+
+    if cooldown_key in sent_signals:
+        last_sent = sent_signals[cooldown_key]
+        if (now - last_sent).total_seconds() < 900:  # 15-min cooldown
+            return
+
+    try:
+        msg = (f"A+ SIGNAL — {plan.symbol}\n"
+               f"Direction: {plan.direction}\n"
+               f"Score: {plan.final_score} ({plan.final_grade})\n"
+               f"Strategy: {plan.strategy}\n"
+               f"Entry: {fmt_price(plan.entry, plan.symbol)}\n"
+               f"SL: {fmt_price(plan.sl, plan.symbol)}\n"
+               f"TP1: {fmt_price(plan.tp1, plan.symbol)}\n"
+               f"TP2: {fmt_price(plan.tp2, plan.symbol)}\n"
+               f"R:R: {fmt_rr(plan.rr)}\n"
+               f"Regime: {plan.regime}\n"
+               f"Session: {plan.session_label}\n"
+               f"Confluence: {plan.confluence_count}/6")
+        notifier.send_signal(msg)
+        sent_signals[cooldown_key] = now
+        st.session_state["tg_sent_signals"] = sent_signals
+    except Exception:
+        pass
+
+
+# ============================================================
+# MAIN RENDER: LIVE ANALYSIS (V12-style 3-column dashboard)
+# ============================================================
+def render_live(symbol, interval, bars, balance, risk_pct, notifier):
+    is_open, mkt = market_is_open(symbol)
+    try:
+        df, plan = select_plan(symbol, interval, bars, get_td_key())
+        latest = df.iloc[-1]
+        td_price = float(latest["close"])
+        prev = float(df.iloc[-2]["close"]) if len(df) > 1 else td_price
+        sweep = detect_sweep(df, symbol)
+        if not is_open and norm(symbol) in FOREX_SYMBOLS:
+            plan = _empty(symbol, "closed", "MARKET CLOSED")
+        plan = finalize_plan(plan, balance, risk_pct)
+    except Exception as e:
+        st.error(f"Error: {e}")
+        return
+
+    # ── MT5 live price ──
+    _ma_tok = get_ma_token()
+    _ma_acc = get_ma_account()
+    mt5_tick = fetch_mt5_price(symbol, _ma_tok, _ma_acc) if (_ma_tok and _ma_acc) else None
+    if mt5_tick:
+        price = mt5_tick["bid"]
+        price_src_label = f"MT5 {fmt_price(mt5_tick['bid'], symbol)}/{fmt_price(mt5_tick['ask'], symbol)}  spread {mt5_tick['spread_pips']}p"
+        price_src_col = "#00d4aa"
+    else:
+        price = td_price
+        price_src_label = "Twelve Data (delayed)"
+        price_src_col = "#f59e0b"
+    chg = price - prev
+    chg_pct = (chg / prev * 100) if prev else 0
+
+    # ── Auto Telegram for A+ ──
+    _maybe_send_telegram(plan, notifier)
+
+    # ── MT5 open positions ──
+    mt5_positions = fetch_mt5_positions(_ma_tok, _ma_acc) if (_ma_tok and _ma_acc) else []
+
+    # ── Title bar ──
+    top1, top2, top3 = st.columns([2, 3, 1])
+    with top1:
+        render_signal_badge(plan.direction, plan.execution_status)
+    with top2:
+        pc = "#10b981" if chg >= 0 else "#ef4444"
+        st.markdown(
+            f"<div style='font-family:Space Mono,monospace;font-size:22px;font-weight:700;padding-top:4px;'>"
+            f"{fmt_price(price, symbol)}"
+            f"<span style='font-size:13px;color:{pc};'> {chg:+.5f} ({chg_pct:+.3f}%)</span>"
+            f"<span style='font-size:10px;color:{price_src_col};margin-left:8px;'>{price_src_label}</span></div>",
+            unsafe_allow_html=True)
+    with top3:
+        lc = "#10b981" if mkt == "LIVE" else "#f59e0b"
+        st.markdown(f"<div style='text-align:right;padding-top:8px;'><span style='font-family:Space Mono,monospace;font-size:11px;padding:4px 10px;border-radius:4px;border:1px solid rgba(255,255,255,.08);color:{lc};'>{mkt}</span></div>", unsafe_allow_html=True)
+
+    # ── MT5 positions panel ──
+    if mt5_positions:
+        pos_rows = []
+        for p in mt5_positions:
+            sym_p = p.get("symbol", "?")
+            typ = p.get("type", "?").replace("POSITION_TYPE_", "")
+            vol = p.get("volume", 0)
+            op = p.get("openPrice", 0)
+            cp = p.get("currentPrice", 0)
+            profit = p.get("profit", 0)
+            sl_p = p.get("stopLoss", 0)
+            tp_p = p.get("takeProfit", 0)
+            pos_rows.append({"Symbol": sym_p, "Type": typ, "Vol": vol,
+                             "Open": fmt_price(op, sym_p), "Current": fmt_price(cp, sym_p),
+                             "SL": fmt_price(sl_p, sym_p) if sl_p else "—",
+                             "TP": fmt_price(tp_p, sym_p) if tp_p else "—",
+                             "P&L": f"${profit:+.2f}"})
+        st.markdown("<div style='font-family:Space Mono,monospace;font-size:11px;color:#00d4aa;letter-spacing:.08em;margin:4px 0 2px;'>MT5 OPEN POSITIONS</div>", unsafe_allow_html=True)
+        st.dataframe(pd.DataFrame(pos_rows), use_container_width=True, hide_index=True)
+
+    # ── KPI BAR (V12 style with 12 inline metrics) ──
+    gc = grade_color(plan.final_grade)
+    rsi_val = fmt_num(latest.get("rsi14"), 1)
+    rsi_col = "#ef4444" if rsi_val != "—" and float(rsi_val) > 70 else "#10b981" if rsi_val != "—" and float(rsi_val) < 30 else "#e8edf2"
+    news_col = {"HIGH": "#ef4444", "MEDIUM": "#f59e0b", "LOW": "#10b981"}.get(plan.news_risk, "#8b9ab0")
+    conf_col = "#10b981" if plan.confluence_count >= 4 else "#f59e0b" if plan.confluence_count >= 2 else "#ef4444"
+    adj_col = "#10b981" if plan.news_adj > 0 else "#ef4444" if plan.news_adj < 0 else "#8b9ab0"
+    dir_col = "#10b981" if plan.direction == "Buy" else "#ef4444" if plan.direction == "Sell" else "#f59e0b"
+
+    def kpi(lbl, val, col="#e8edf2"):
+        return (f"<div style='background:#0d1117;border:1px solid rgba(255,255,255,0.07);border-radius:6px;padding:10px 12px;flex:1;min-width:0;'>"
+                f"<div style='font-size:10px;color:#8b9ab0;font-family:Space Mono,monospace;letter-spacing:.07em;margin-bottom:4px;white-space:nowrap;'>{lbl}</div>"
+                f"<div style='font-size:14px;font-weight:700;color:{col};font-family:Space Mono,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'>{val}</div></div>")
+
+    adj_str = ("+" + str(plan.news_adj)) if plan.news_adj >= 0 else str(plan.news_adj)
+    st.markdown(f"""<div style='display:flex;gap:8px;margin:12px 0;flex-wrap:wrap;'>
+      {kpi("STRATEGY", plan.strategy[:16], "#00d4aa")}
+      {kpi("TECH SCORE", str(plan.setup_score), grade_color(plan.setup_grade))}
+      {kpi("NEWS ADJ", adj_str, adj_col)}
+      {kpi("FINAL SCORE", str(plan.final_score), gc)}
+      {kpi("GRADE", plan.final_grade, gc)}
+      {kpi("CONFLUENCE", f"{plan.confluence_count}/6", conf_col)}
+      {kpi("SESSION", plan.session_label[:12], "#8b9ab0")}
+      {kpi("NEWS RISK", plan.news_risk, news_col)}
+      {kpi("DIRECTION", plan.direction, dir_col)}
+      {kpi("R:R", fmt_rr(plan.rr), "#a78bfa")}
+      {kpi("RSI14", rsi_val, rsi_col)}
+      {kpi("LOT", fmt_num(plan.suggested_lot, 3), "#00d4aa")}
+    </div>""", unsafe_allow_html=True)
+    st.markdown("---")
+
+    # ── 3-COLUMN LAYOUT ──
+    col_l, col_c, col_r = st.columns([1.05, 2.2, 1.15])
+
+    with col_l:
+        render_kv_panel("ENTRY LEVELS", [
+            ("ENTRY", fmt_price(plan.entry, symbol), "good"),
+            ("STOP LOSS", fmt_price(plan.sl, symbol), "bad"),
+            ("TP1", fmt_price(plan.tp1, symbol), "warn"),
+            ("TP2", fmt_price(plan.tp2, symbol), "good"),
+            ("TP3", fmt_price(plan.tp3, symbol), "info") if plan.tp3 else ("TP3", "—", "muted"),
+        ])
+        render_kv_panel("EXIT RULES", [(f"#{i+1}", r, "") for i, r in enumerate(plan.exit_conditions or ["No exit plan"])])
+        if sweep["detected"]:
+            render_kv_panel("SWEEP", [("Severity", sweep["severity"], "bad" if sweep["severity"] == "HIGH" else "warn"), ("Detail", sweep["desc"], "")])
+        render_news_panel(plan)
+
+    with col_c:
+        st.plotly_chart(build_chart(df, plan, symbol), use_container_width=True)
+        # Market overview
+        st.markdown("<div class='mono-title'>MARKET OVERVIEW</div>", unsafe_allow_html=True)
+        overview_syms = [s for s in ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD", "AUDUSD", "USDCAD"] if s in INTERNAL_SYMBOLS]
+        ov = [build_overview_row(s, balance, risk_pct, get_td_key()) for s in overview_syms]
+        st.dataframe(pd.DataFrame(ov), use_container_width=True, hide_index=True)
+
+    with col_r:
+        active = render_trade_tracker(plan, price, df)
+        ae, asl, ad = (active if active else (None, None, None))
+        render_score_panel(plan, df, ae, asl, ad)
+        render_kv_panel("RISK PLAN", [
+            ("Balance", f"${balance:,.2f}", ""),
+            ("Risk %", f"{risk_pct:.1f}%", ""),
+            ("Risk $", f"${balance * risk_pct / 100:,.2f}", "warn"),
+            ("Lot", fmt_num(plan.suggested_lot, 3), "good"),
+            ("Status", plan.execution_status[:20],
+             "good" if plan.execution_status == "Ready to Enter" else "bad" if "HIGH NEWS" in plan.execution_status else "warn"),
+        ])
+
+
+# ============================================================
+# BACKTEST ENGINE
+# ============================================================
+def render_backtest(td_key):
+    st.markdown("<div style='font-family:Space Mono,monospace;font-size:18px;color:#00d4aa;letter-spacing:.12em;padding:4px 0 12px;'>BACKTEST ENGINE</div>", unsafe_allow_html=True)
+    bc1, bc2, bc3, bc4 = st.columns(4)
+    bt_sym = bc1.selectbox("Symbol", INTERNAL_SYMBOLS, index=INTERNAL_SYMBOLS.index("XAUUSD") if "XAUUSD" in INTERNAL_SYMBOLS else 0, key="bt_sym")
+    bt_int = bc2.selectbox("Interval", ["15min", "1h", "4h"], index=0, key="bt_int")
+    bt_bal = bc3.number_input("Balance", min_value=10.0, value=500.0, step=50.0, key="bt_bal")
+    bt_rsk = bc4.number_input("Risk %", min_value=0.1, max_value=5.0, value=1.0, step=0.1, key="bt_rsk")
+    fc1, fc2 = st.columns(2)
+    score_thresh = fc1.slider("Min Score to trade", 40, 90, 70, 5, key="bt_thresh")
+    max_bars = fc2.slider("History bars", 400, 1000, 700, 50, key="bt_bars")
+
+    if not st.button("Run Backtest"):
+        return
+    with st.spinner("Fetching data and running simulation..."):
+        try:
+            s = norm(bt_sym)
+            df = add_indicators(fetch_bars(s, bt_int, max_bars, td_key))
+            results = []
+            for i in range(220, len(df) - 20):
+                chunk = df.iloc[:i + 1].copy()
+                regime = get_regime(chunk)
+                if regime == "insufficient":
+                    continue
+                if regime in ("trend_up", "trend_down"):
+                    plan = _trend_plan(chunk, s, regime, "neutral")
+                elif regime == "squeeze":
+                    plan = _squeeze_plan(chunk, s)
+                else:
+                    plan = _mean_rev_plan(chunk, s, regime)
+                if plan.execution_status != "Ready to Enter" or plan.entry is None:
+                    continue
+                if plan.setup_score < score_thresh:
+                    continue
+                future = df.iloc[i + 1:i + 21]
+                outcome = None
+                er = None
+                for _, row in future.iterrows():
+                    if plan.direction == "Buy":
+                        if row["low"] <= plan.sl:
+                            outcome = -1.0
+                            er = "SL"
+                            break
+                        if row["high"] >= plan.tp1:
+                            outcome = abs(plan.tp1 - plan.entry) / max(abs(plan.entry - plan.sl), 1e-9)
+                            er = "TP1"
+                            break
+                    else:
+                        if row["high"] >= plan.sl:
+                            outcome = -1.0
+                            er = "SL"
+                            break
+                        if row["low"] <= plan.tp1:
+                            outcome = abs(plan.entry - plan.tp1) / max(abs(plan.sl - plan.entry), 1e-9)
+                            er = "TP1"
+                            break
+                if outcome is None:
+                    lc = float(future.iloc[-1]["close"])
+                    outcome = (lc - plan.entry) / max(abs(plan.entry - plan.sl), 1e-9) if plan.direction == "Buy" else (plan.entry - lc) / max(abs(plan.sl - plan.entry), 1e-9)
+                    er = "Time"
+                pnl = outcome * bt_bal * (bt_rsk / 100)
+                results.append({"time": chunk.iloc[-1]["time"], "symbol": s, "direction": plan.direction,
+                                "strategy": plan.strategy, "grade": plan.setup_grade, "score": plan.setup_score,
+                                "regime": plan.regime, "r_mult": round(outcome, 3), "pnl": round(pnl, 2),
+                                "exit": er})
+            tdf = pd.DataFrame(results)
+        except Exception as e:
+            st.error(f"Backtest error: {e}")
+            return
+
+    if tdf.empty:
+        st.warning("No trades generated at this score threshold.")
+        return
+    tdf["cum_pnl"] = tdf["pnl"].cumsum()
+    tdf["win"] = (tdf["pnl"] > 0).astype(int)
+
+    # Top metrics
+    wins = tdf["win"].sum()
+    losses = len(tdf) - wins
+    wr = wins / len(tdf) * 100
+    gross_p = tdf[tdf["pnl"] > 0]["pnl"].sum()
+    gross_l = abs(tdf[tdf["pnl"] < 0]["pnl"].sum())
+    pf = gross_p / max(gross_l, 1e-9)
+    net = tdf["pnl"].sum()
+    avg_r = tdf["r_mult"].mean()
+
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Trades", len(tdf))
+    m2.metric("Win Rate", f"{wr:.1f}%")
+    m3.metric("Profit Factor", f"{pf:.2f}")
+    m4.metric("Net PnL", f"${net:,.2f}")
+    m5.metric("Avg R", f"{avg_r:.2f}")
+
+    # Equity curve
+    fig_eq = go.Figure()
+    fig_eq.add_trace(go.Scatter(x=tdf["time"], y=tdf["cum_pnl"] + bt_bal, mode="lines", name="Equity",
+                                 line=dict(color="#00d4aa", width=2), fill="tozeroy",
+                                 fillcolor="rgba(0,212,170,0.06)"))
+    fig_eq.add_hline(y=bt_bal, line=dict(color="#8b9ab0", width=1, dash="dot"))
+    fig_eq.update_layout(template="plotly_dark", height=300, margin=dict(l=8, r=8, t=8, b=8), yaxis_title="Equity (USD)")
+    st.plotly_chart(fig_eq, use_container_width=True)
+
+    # Performance by grade
+    for g in ["A+", "A", "B", "C", "D"]:
+        sub = tdf[tdf["grade"] == g]
+        if not sub.empty:
+            sw = sub["win"].sum()
+            sn = len(sub)
+            st.markdown(f"**{g}**: {sn} trades, {sw / sn * 100:.0f}% WR, ${sub['pnl'].sum():.2f} net")
+
+    with st.expander("Full Trade Log"):
+        st.dataframe(tdf.drop(columns=["win", "cum_pnl"]), use_container_width=True, hide_index=True)
+        st.download_button("Download CSV", tdf.to_csv(index=False).encode(), "backtest.csv", "text/csv")
+
+
+# ============================================================
+# JOURNAL
+# ============================================================
+JOURNAL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trade_journal.json")
+
+def load_journal() -> List[dict]:
+    try:
+        if os.path.exists(JOURNAL_FILE):
+            with open(JOURNAL_FILE, "r") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return []
+
+def save_journal(journal: List[dict]):
+    try:
+        with open(JOURNAL_FILE, "w") as f:
+            json.dump(journal, f, indent=2)
+    except Exception:
+        pass
+
+def render_journal():
+    st.markdown("<div style='font-family:Space Mono,monospace;font-size:18px;color:#00d4aa;letter-spacing:.12em;padding:4px 0 12px;'>TRADE JOURNAL</div>", unsafe_allow_html=True)
+    j = load_journal()
+    if not j:
+        st.info("No trades logged yet. Enter a live trade and close it to start recording.")
+        return
+
+    total = len(j)
+    wins = sum(1 for t in j if t.get("result") == "Win")
+    losses = sum(1 for t in j if t.get("result") == "Loss")
+    pnls = [t.get("pnl_r", 0) for t in j]
+    wr = wins / total * 100 if total else 0
+    total_r = sum(pnls)
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Trades", total)
+    m2.metric("Win Rate", f"{wr:.0f}%")
+    m3.metric("W / L", f"{wins} / {losses}")
+    m4.metric("Total R", f"{total_r:+.1f}")
+
+    df_j = pd.DataFrame(j)
+    if "pnl_r" in df_j.columns:
+        df_j["cum_r"] = df_j["pnl_r"].cumsum()
+        fig_eq = go.Figure()
+        fig_eq.add_trace(go.Scatter(x=list(range(1, len(df_j) + 1)), y=df_j["cum_r"],
+                                    mode="lines+markers", name="Cumulative R",
+                                    line=dict(color="#00d4aa", width=2)))
+        fig_eq.add_hline(y=0, line=dict(color="#8b9ab0", dash="dot", width=1))
+        fig_eq.update_layout(plot_bgcolor="#0d1117", paper_bgcolor="#0d1117",
+                             font=dict(color="#e8edf2"), height=280, margin=dict(t=20, b=20),
+                             xaxis_title="Trade #", yaxis_title="Cumulative R")
+        st.plotly_chart(fig_eq, use_container_width=True)
+
+    display_cols = [c for c in ["id", "ts", "symbol", "dir", "entry", "sl", "exit", "result", "pnl_r", "grade", "final", "notes"] if c in df_j.columns]
+    st.dataframe(df_j[display_cols], use_container_width=True, hide_index=True)
+    st.download_button("Export CSV", df_j.to_csv(index=False).encode(), "trade_journal.csv", "text/csv")
+
+
+# ============================================================
+# SIDEBAR + AUTH + MAIN
+# ============================================================
+# Auth gate
 _auth_client = None
 if SUPABASE_URL and SUPABASE_KEY:
     _auth_client = SupabaseAuth(SUPABASE_URL, SUPABASE_KEY)
     if not render_auth_page(_auth_client):
-        st.stop()  # Not authenticated — stop here, don't render the app
+        st.stop()
 
-    # Wire up cloud sync with authenticated user
-    if st.session_state.get("cloud_sync") and st.session_state.get("user"):
-        user_id = st.session_state.user.get("id", "")
-        access_token = st.session_state.get("access_token", "")
-        if user_id:
-            st.session_state.cloud_sync.set_user(user_id, access_token)
+# Initialize session state
+if "active_trades" not in st.session_state:
+    st.session_state.active_trades = []
+if "tg_sent_signals" not in st.session_state:
+    st.session_state.tg_sent_signals = {}
 
-
-# ═════════════════════════════════════════════════════════════
-# SIDEBAR NAVIGATION
-# ═════════════════════════════════════════════════════════════
-with st.sidebar:
-    # Logo
-    logo_path = os.path.join(os.path.dirname(__file__), "logo.png")
-    if os.path.exists(logo_path):
-        st.image(logo_path, use_container_width=True)
-    else:
-        st.markdown(f"""
-        <div style="text-align:center; padding: 16px 0;">
-            <div style="font-family:'Space Mono',monospace; color:#00d4ff; font-size:22px; font-weight:700;">
-                {PLATFORM_NAME}
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-    st.markdown(f"""<div style="text-align:center; color:#6b7280; font-size:11px; margin-top:-8px;">
-        Multi-Symbol Trading Platform v{VERSION}
-    </div>""", unsafe_allow_html=True)
-
-    st.divider()
-
-    pages = {
-        "home": ("\U0001f3e0", "Home"),
-        "dashboard": ("\U0001f4ca", "Gold Dashboard"),
-        "academy": ("\U0001f393", "Trading Academy"),
-        "manual": ("\U0001f4d6", "Signal Manual"),
-        "calendar": ("\U0001f4c5", "Economic Calendar"),
-        "risk_calc": ("\U0001f9ee", "Risk Calculator"),
-        "tracker": ("\U0001f4cc", "Live Trade Tracker"),
-        "scoreboard": ("\U0001f3c6", "Performance Scoreboard"),
-        "regime": ("\U0001f30d", "Market Regime"),
-        "multi_signal": ("\U0001f310", "Signal Hub"),
-        "grok_ai": ("\U0001f9e0", "Grok AI Chat"),
-        "assistant": ("\U0001f916", "Decision Assistant"),
-        "backtest": ("\U0001f52c", "Backtest Engine"),
-        "ai_insights": ("\U0001f4a1", "AI Learning"),
-    }
-
-    for key, (icon, label) in pages.items():
-        is_active = st.session_state.page == key
-        if st.button(
-            f"{icon}  {label}",
-            key=f"nav_{key}",
-            use_container_width=True,
-            type="primary" if is_active else "secondary",
-        ):
-            st.session_state.page = key
-            st.rerun()
-
-    st.divider()
-
-    # TP Strategy selector
-    st.markdown("**TP/SL Strategy**")
-    strategy = st.selectbox(
-        "Choose strategy",
-        options=list(STRATEGIES.keys()),
-        format_func=lambda x: STRATEGIES[x]["name"],
-        index=list(STRATEGIES.keys()).index(st.session_state.tp_strategy),
-        key="strategy_select",
-        label_visibility="collapsed",
+# Notification Manager
+_notifier = None
+if TELEGRAM_BOT_TOKEN and TELEGRAM_PRIVATE_CHANNEL_ID:
+    _notifier = NotificationManager(
+        bot_token=TELEGRAM_BOT_TOKEN,
+        private_channel_id=TELEGRAM_PRIVATE_CHANNEL_ID,
+        public_channel_id=TELEGRAM_PUBLIC_CHANNEL_ID,
     )
-    if strategy != st.session_state.tp_strategy:
-        st.session_state.tp_strategy = strategy
-        st.session_state.trade_manager.set_strategy(strategy)
-    st.caption(STRATEGIES[strategy]["description"])
 
-    st.divider()
-    # Balance input
-    balance = st.number_input("Account Balance ($)", value=st.session_state.balance,
-                              min_value=100.0, step=100.0, key="bal_input")
-    if balance != st.session_state.balance:
-        st.session_state.balance = balance
-        st.session_state.scanner.balance = balance
-        st.session_state.risk_manager.current_balance = balance
+# ── SIDEBAR ──
+with st.sidebar:
+    st.markdown(f"<div style='font-family:Space Mono,monospace;font-size:11px;color:#00d4aa;letter-spacing:.12em;padding:8px 0 12px;'>{PLATFORM_NAME}<br><span style='color:#4a5568;'>{APP_VERSION}</span></div>", unsafe_allow_html=True)
+    mode = st.radio("Mode", ["Live Analysis", "Backtest", "Journal"], index=0, label_visibility="collapsed")
+    st.markdown("---")
+    auto_refresh = st.toggle("Auto Refresh", value=True)
+    refresh_sec = st.selectbox("Interval (s)", [15, 30, 60, 120], index=1)
+    if auto_refresh and st_autorefresh:
+        st_autorefresh(interval=int(refresh_sec) * 1000, key="ar_v12")
+    st.markdown("---")
+    symbol = st.selectbox("Symbol", INTERNAL_SYMBOLS, index=INTERNAL_SYMBOLS.index("XAUUSD") if "XAUUSD" in INTERNAL_SYMBOLS else 0)
+    interval_label = st.selectbox("Interval", list(INTERVAL_MAP.keys()), index=2)
+    bars = st.slider("Bars", 220, 1000, 400, 20)
+    balance = st.number_input("Balance (USD)", min_value=10.0, value=500.0, step=50.0)
+    risk_pct = st.number_input("Risk %", min_value=0.1, max_value=5.0, value=1.0, step=0.1)
+    st.markdown("---")
+    st.markdown("<div style='font-size:11px;color:#8b9ab0;font-family:Space Mono,monospace;margin-bottom:4px;'>API KEYS</div>", unsafe_allow_html=True)
+    _td = st.text_input("Twelve Data", value=st.session_state.get("td_key", _ENV_TD), type="password", key="td_inp", placeholder="paste key...")
+    _xai = st.text_input("xAI Grok", value=st.session_state.get("xai_key", _ENV_XAI), type="password", key="xai_inp", placeholder="paste key...")
+    if _td:
+        st.session_state["td_key"] = _td
+    if _xai:
+        st.session_state["xai_key"] = _xai
+    _GROK_MODELS = ["grok-4-1-fast-non-reasoning", "grok-4-1-fast-reasoning", "grok-4.20-0309-non-reasoning"]
+    _gm = st.selectbox("Grok Model", _GROK_MODELS, index=0, key="grok_model_sel")
+    st.session_state["grok_model"] = _gm
+    td_ok = "OK" if _td else "X"
+    xai_ok = "OK" if _xai else "X"
+    st.markdown(f"<div style='font-size:11px;color:#4a5568;font-family:Space Mono,monospace;'>{td_ok} TD &nbsp; {xai_ok} xAI</div>", unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    if _xai and c1.button("Test Grok"):
+        ok, msg = test_grok_connection(_xai)
+        (st.success if ok else st.error)(msg)
+    if _xai and c2.button("List Models"):
+        try:
+            _r = requests.get("https://api.x.ai/v1/models",
+                              headers={"Authorization": f"Bearer {_xai}"}, timeout=10)
+            if _r.status_code == 200:
+                _ids = [m["id"] for m in _r.json().get("data", [])]
+                st.success("Available: " + ", ".join(_ids) if _ids else "No models returned")
+            else:
+                st.error(f"HTTP {_r.status_code}: {_r.text[:120]}")
+        except Exception as e:
+            st.error(str(e))
 
-    # ── User Info & Logout ──
+    st.markdown("---")
+    st.markdown("<div style='font-size:11px;color:#00d4aa;font-family:Space Mono,monospace;margin-bottom:4px;'>MT5 LIVE (MetaApi)</div>", unsafe_allow_html=True)
+    _ma_tok = st.text_input("MetaApi Token", value=st.session_state.get("ma_token", ""), type="password", key="ma_tok_inp")
+    _ma_acc = st.text_input("Account ID", value=st.session_state.get("ma_account", ""), key="ma_acc_inp")
+    _ma_sfx = st.text_input("Symbol suffix", value=st.session_state.get("ma_sym_suffix", ".r"), key="ma_sfx_inp")
+    if _ma_tok:
+        st.session_state["ma_token"] = _ma_tok
+    if _ma_acc:
+        st.session_state["ma_account"] = _ma_acc
+    st.session_state["ma_sym_suffix"] = _ma_sfx
+    _mab1, _mab2 = st.columns(2)
+    if _ma_tok and _ma_acc and _mab1.button("Test MT5"):
+        _ok, _msg = test_mt5_connection(_ma_tok, _ma_acc)
+        (st.success if _ok else st.error)(_msg)
+    if _ma_tok and _ma_acc and _mab2.button("Deploy"):
+        _ok, _msg = deploy_mt5_account(_ma_tok, _ma_acc)
+        (st.success if _ok else st.error)(_msg)
+
+    # Logout
     if st.session_state.get("user"):
         st.divider()
         user = st.session_state.user
         user_email = user.get("email", "User")
-        st.markdown(f"""<div style="color:#9ca3af; font-size:12px;">
-            Logged in as:<br><strong style="color:#7dd3fc;">{user_email}</strong>
-        </div>""", unsafe_allow_html=True)
-        if st.button("Logout", key="logout_btn", use_container_width=True):
+        st.markdown(f"<div style='color:#9ca3af;font-size:12px;'>Logged in as:<br><strong style='color:#00d4aa;'>{user_email}</strong></div>", unsafe_allow_html=True)
+        if st.button("Logout", use_container_width=True):
             if _auth_client:
                 _auth_client.sign_out(st.session_state.get("access_token", ""))
             for k in ["access_token", "refresh_token", "user"]:
                 st.session_state.pop(k, None)
-            # Clear persistent browser session
-            from auth.supabase_auth import _clear_browser_session
             _clear_browser_session()
             st.rerun()
 
-
-# ═════════════════════════════════════════════════════════════
-# CHART BUILDER WITH ANNOTATIONS
-# ═════════════════════════════════════════════════════════════
-def build_annotated_chart(df: pd.DataFrame, engine_result: dict = None,
-                         levels: dict = None, title: str = "XAUUSD") -> go.Figure:
-    """Build a Plotly candlestick chart with signal annotations."""
-    fig = make_subplots(
-        rows=3, cols=1, shared_xaxes=True,
-        vertical_spacing=0.03,
-        row_heights=[0.6, 0.2, 0.2],
-        subplot_titles=[title, "RSI (14)", "MACD"],
-    )
-
-    # Candlestick
-    fig.add_trace(go.Candlestick(
-        x=df.index, open=df["open"], high=df["high"],
-        low=df["low"], close=df["close"], name="XAUUSD",
-        increasing_line_color="#10b981", decreasing_line_color="#ef4444",
-    ), row=1, col=1)
-
-    # EMAs
-    if "ema20" in df.columns:
-        fig.add_trace(go.Scatter(x=df.index, y=df["ema20"], name="EMA20",
-                                line=dict(color="#00d4ff", width=1)), row=1, col=1)
-    if "ema50" in df.columns:
-        fig.add_trace(go.Scatter(x=df.index, y=df["ema50"], name="EMA50",
-                                line=dict(color="#3b82f6", width=1)), row=1, col=1)
-    if "ema200" in df.columns:
-        fig.add_trace(go.Scatter(x=df.index, y=df["ema200"], name="EMA200",
-                                line=dict(color="#ef4444", width=1, dash="dot")), row=1, col=1)
-
-    # RSI
-    if "rsi14" in df.columns:
-        fig.add_trace(go.Scatter(x=df.index, y=df["rsi14"], name="RSI",
-                                line=dict(color="#00d4ff", width=1.5)), row=2, col=1)
-        fig.add_hline(y=70, line_dash="dash", line_color="rgba(239,68,68,0.5)", row=2, col=1)
-        fig.add_hline(y=30, line_dash="dash", line_color="rgba(16,185,129,0.5)", row=2, col=1)
-
-    # MACD
-    if "macd" in df.columns:
-        fig.add_trace(go.Scatter(x=df.index, y=df["macd"], name="MACD",
-                                line=dict(color="#3b82f6", width=1)), row=3, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df["macd_signal"], name="Signal",
-                                line=dict(color="#00d4ff", width=1)), row=3, col=1)
-        colors = ["#10b981" if v >= 0 else "#ef4444" for v in df["macd_hist"]]
-        fig.add_trace(go.Bar(x=df.index, y=df["macd_hist"], name="Histogram",
-                            marker_color=colors), row=3, col=1)
-
-    # ── SIGNAL ANNOTATIONS ──
-    if engine_result and levels and levels.get("valid"):
-        price = levels["entry"]
-        sl = levels["sl"]
-        direction = engine_result["direction"]
-        modules = engine_result.get("modules", {})
-
-        # Entry line
-        fig.add_hline(y=price, line_dash="solid", line_color="#00d4ff",
-                     annotation_text=f"ENTRY ${price:.2f}", row=1, col=1)
-
-        # SL line
-        fig.add_hline(y=sl, line_dash="dash", line_color="#ef4444",
-                     annotation_text=f"SL ${sl:.2f}", row=1, col=1)
-
-        # TP lines (first 3 for clarity)
-        tp_levels = compute_10tp_levels(price, sl, direction)
-        tp_colors = ["#10b981", "#22d3ee", "#818cf8"]
-        for i, tp in enumerate(tp_levels[:3]):
-            fig.add_hline(y=tp, line_dash="dot",
-                         line_color=tp_colors[i % len(tp_colors)],
-                         annotation_text=f"TP{i+1} ${tp:.2f}", row=1, col=1)
-
-        # S/D Zone annotation
-        sd = modules.get("supply_demand", {})
-        zone = sd.get("zone")
-        if zone:
-            color = "rgba(16,185,129,0.15)" if zone["type"] == "demand" else "rgba(239,68,68,0.15)"
-            border = "#10b981" if zone["type"] == "demand" else "#ef4444"
-            fig.add_hrect(y0=zone["bottom"], y1=zone["top"],
-                         fillcolor=color, line=dict(color=border, width=1),
-                         annotation_text=f"{'Demand' if zone['type'] == 'demand' else 'Supply'} Zone "
-                                        f"({'Fresh' if zone.get('fresh') else str(zone.get('visits', 0)) + ' visits'})",
-                         row=1, col=1)
-
-        # FVG annotation
-        fvg_data = modules.get("fvg", {})
-        fvg = fvg_data.get("fvg")
-        if fvg:
-            fvg_color = "rgba(59,130,246,0.15)"
-            fig.add_hrect(y0=fvg["bottom"], y1=fvg["top"],
-                         fillcolor=fvg_color,
-                         line=dict(color="#3b82f6", width=1, dash="dot"),
-                         annotation_text="Fair Value Gap",
-                         row=1, col=1)
-
-        # Order Block annotation
-        ob_data = modules.get("order_blocks", {})
-        ob = ob_data.get("ob")
-        if ob:
-            ob_color = "rgba(168,85,247,0.15)"
-            fig.add_hrect(y0=ob["bottom"], y1=ob["top"],
-                         fillcolor=ob_color,
-                         line=dict(color="#a855f7", width=1),
-                         annotation_text=f"Order Block ({'BOS' if ob_data.get('score', 0) >= 12 else 'Std'})",
-                         row=1, col=1)
-
-        # Add text annotation with signal reasoning
-        reasons = []
-        if sd.get("score", 0) > 0:
-            reasons.append(f"S/D Zone (+{sd['score']})")
-        if fvg_data.get("score", 0) > 0:
-            reasons.append(f"FVG (+{fvg_data['score']})")
-        choch = modules.get("choch", {})
-        if choch.get("score", 0) > 0:
-            reasons.append(f"CHoCH (+{choch['score']})")
-        bos = modules.get("bos", {})
-        if bos.get("bos"):
-            reasons.append(f"BOS (+{bos['score']})")
-        fib = modules.get("fibonacci", {})
-        if fib.get("ote"):
-            reasons.append("OTE (+15)")
-        elif fib.get("golden_pocket"):
-            reasons.append("Golden Pocket (+10)")
-        liq = modules.get("liquidity_sweep", {})
-        if liq.get("detected"):
-            reasons.append(f"Liq Sweep (+{liq['score']})")
-
-        if reasons:
-            reason_text = " | ".join(reasons)
-            fig.add_annotation(
-                x=df.index[-1], y=price,
-                text=f"<b>WHY:</b> {reason_text}",
-                showarrow=True, arrowhead=2,
-                font=dict(size=11, color="#00d4ff"),
-                bgcolor="rgba(0,0,0,0.8)",
-                bordercolor="#00d4ff",
-                row=1, col=1,
-            )
-
-    # Layout
-    fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="#0a0e17",
-        plot_bgcolor="#0a0e17",
-        font=dict(family="Inter, sans-serif", color="#e5e7eb"),
-        height=650,
-        showlegend=True,
-        legend=dict(orientation="h", y=1.02),
-        xaxis_rangeslider_visible=False,
-        margin=dict(l=50, r=50, t=40, b=30),
-    )
-
-    return fig
-
-
-# ═════════════════════════════════════════════════════════════
-# PAGE: HOME / LANDING
-# ═════════════════════════════════════════════════════════════
-def page_home():
-    # Auto-refresh home page every 60 seconds for live price
-    if st_autorefresh:
-        st_autorefresh(interval=15000, limit=None, key="home_refresh")
-
-    # Hero with logo
-    logo_path = os.path.join(os.path.dirname(__file__), "logo.png")
-    col_l, col_logo, col_r = st.columns([1, 2, 1])
-    with col_logo:
-        if os.path.exists(logo_path):
-            st.image(logo_path, use_container_width=True)
-    st.markdown("""
-    <div class="gold-header" style="text-align:center;">
-        <div class="subtitle" style="font-size:16px;">Professional XAUUSD Gold Trading Platform | V6 Callisto Optimized | 26-Module Engine | A+ Only</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # Live overview
-    overview = st.session_state.scanner.get_market_overview()
-
-    # Try MetaAPI live price first
-    mt5_price = fetch_metaapi_price()
-    price_source = "MT5 LIVE" if mt5_price else "DELAYED"
-    display_price = mt5_price if mt5_price else overview.get('price', 0)
-    source_color = "#10b981" if mt5_price else "#f59e0b"
-
-    col1, col2, col3, col4, col5 = st.columns(5)
-    with col1:
-        st.markdown(f"""<div class="metric-card">
-            <div class="label">Gold Price <span style="color:{source_color}; font-size:9px;">● {price_source}</span></div>
-            <div class="value">${display_price:,.2f}</div>
-        </div>""", unsafe_allow_html=True)
-    with col2:
-        bias = overview.get("bias", "NEUTRAL")
-        bias_color = "#10b981" if bias == "BULLISH" else "#ef4444" if bias == "BEARISH" else "#6b7280"
-        st.markdown(f"""<div class="metric-card">
-            <div class="label">Market Bias</div>
-            <div class="value" style="color:{bias_color}">{bias}</div>
-        </div>""", unsafe_allow_html=True)
-    with col3:
-        st.markdown(f"""<div class="metric-card">
-            <div class="label">ATR (14)</div>
-            <div class="value">${overview.get('atr', 0):.2f}</div>
-        </div>""", unsafe_allow_html=True)
-    with col4:
-        rsi = overview.get("rsi", 50)
-        rsi_color = "#ef4444" if rsi > 70 else "#10b981" if rsi < 30 else "#F5A623"
-        st.markdown(f"""<div class="metric-card">
-            <div class="label">RSI</div>
-            <div class="value" style="color:{rsi_color}">{rsi:.1f}</div>
-        </div>""", unsafe_allow_html=True)
-    with col5:
-        kz = overview.get("killzone", "Off-hours")
-        st.markdown(f"""<div class="metric-card">
-            <div class="label">Session</div>
-            <div class="value" style="font-size:16px">{kz}</div>
-        </div>""", unsafe_allow_html=True)
-
-    st.markdown("---")
-
-    # Feature grid
-    col1, col2, col3 = st.columns(3)
-    features = [
-        ("\U0001f4ca", "Signal Dashboard", "Real-time XAUUSD signals with 17-module AI scoring, annotated charts showing WHY every signal fires."),
-        ("\U0001f393", "Trading Academy", "From beginner to advanced — learn trends, S/D zones, FVGs, CHoCH, and how to read our signals."),
-        ("\U0001f4c5", "Economic Calendar", "Gold-impact events from Trading Economics. Know when Fed, NFP, CPI will move gold."),
-        ("\U0001f9ee", "Risk Calculator", "Position sizing for 3 risk tiers. Never risk more than you should."),
-        ("\U0001f4cc", "Live Trade Tracker", "10-TP partial close system with real-time P&L tracking."),
-        ("\U0001f3c6", "Performance Scoreboard", "Win rate, profit factor, drawdown — see how the signals perform."),
-    ]
-    for i, (icon, title, desc) in enumerate(features):
-        with [col1, col2, col3][i % 3]:
-            st.markdown(f"""<div class="metric-card" style="text-align:left; min-height:140px;">
-                <div style="font-size:28px; margin-bottom:8px;">{icon}</div>
-                <div style="color:#00d4ff; font-weight:600; margin-bottom:4px;">{title}</div>
-                <div style="color:#9ca3af; font-size:13px;">{desc}</div>
-            </div>""", unsafe_allow_html=True)
-
-    st.markdown("---")
-
-    # Telegram CTA
-    st.markdown("""
-    <div style="background:linear-gradient(135deg,#0a0e17,#0d1b2a); border:1px solid rgba(0,212,255,0.3);
-                border-radius:12px; padding:24px; text-align:center; margin:20px 0;">
-        <div style="font-size:20px; color:#00d4ff; font-weight:700; margin-bottom:8px;">
-            Get Signals on Telegram
-        </div>
-        <div style="color:#9ca3af; margin-bottom:16px;">
-            Register under our FP Markets referral to receive real-time XAUUSD signals,
-            CHoCH alerts, TP notifications, and FVG entry opportunities directly on Telegram.
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-
-# ═════════════════════════════════════════════════════════════
-# PAGE: SIGNAL DASHBOARD
-# ═════════════════════════════════════════════════════════════
-def page_dashboard():
-    st.markdown("""<div class="gold-header">
-        <h1>\U0001f4ca Signal Dashboard</h1>
-        <div class="subtitle">XAUUSD Gold Signals | V6 Callisto + Grok AI | A+ Only | 200-pip SL | 5x Layered Orders</div>
-    </div>""", unsafe_allow_html=True)
-
-    if st_autorefresh:
-        st_autorefresh(interval=15000, limit=None, key="dash_refresh")
-
-    # Fetch data
-    df_m15 = fetch_bars("XAU/USD", "15min", 200, TWELVE_DATA_API_KEY)
-    df_h1 = fetch_bars("XAU/USD", "1h", 200, TWELVE_DATA_API_KEY)
-    df_h4 = fetch_bars("XAU/USD", "4h", 200, TWELVE_DATA_API_KEY)
-
-    if df_m15 is not None:
-        df_m15 = add_indicators(df_m15)
-    if df_h1 is not None:
-        df_h1 = add_indicators(df_h1)
-    if df_h4 is not None:
-        df_h4 = add_indicators(df_h4)
-
-    # Scan both directions
-    buy_result = gold_engine_score(df_m15, df_h1, df_h4, "BUY") if df_m15 is not None else None
-    sell_result = gold_engine_score(df_m15, df_h1, df_h4, "SELL") if df_m15 is not None else None
-
-    # Display scores
-    col1, col2 = st.columns(2)
-    if buy_result:
-        with col1:
-            grade_class = f"grade-{'aplus' if buy_result['grade'] == 'A+' else buy_result['grade'].lower()}"
-            st.markdown(f"""<div class="signal-card signal-buy">
-                <div style="font-size:18px; font-weight:700; color:#10b981;">
-                    \U0001f7e2 BUY Signal
-                    <span class="grade-badge {grade_class}">{buy_result['grade']}</span>
-                </div>
-                <div style="color:#d1d5db; margin-top:8px;">
-                    Score: <b>{buy_result['score']}/100</b> |
-                    Confidence: <b>{buy_result['confidence']}</b> |
-                    Confirmations: {buy_result['confirmations']}
-                </div>
-            </div>""", unsafe_allow_html=True)
-
-    if sell_result:
-        with col2:
-            grade_class = f"grade-{'aplus' if sell_result['grade'] == 'A+' else sell_result['grade'].lower()}"
-            st.markdown(f"""<div class="signal-card signal-sell">
-                <div style="font-size:18px; font-weight:700; color:#ef4444;">
-                    \U0001f534 SELL Signal
-                    <span class="grade-badge {grade_class}">{sell_result['grade']}</span>
-                </div>
-                <div style="color:#d1d5db; margin-top:8px;">
-                    Score: <b>{sell_result['score']}/100</b> |
-                    Confidence: <b>{sell_result['confidence']}</b> |
-                    Confirmations: {sell_result['confirmations']}
-                </div>
-            </div>""", unsafe_allow_html=True)
-
-    # Determine best signal
-    best = None
-    if buy_result and sell_result:
-        best = buy_result if buy_result["score"] >= sell_result["score"] else sell_result
-    elif buy_result:
-        best = buy_result
-    elif sell_result:
-        best = sell_result
-
-    # A+ FILTER NOTICE
-    if best and best["grade"] != "A+":
-        st.markdown(f"""<div style="background:#1a1a2e; border:2px solid #F5A623; border-radius:12px; padding:16px; margin:12px 0;">
-            <div style="color:#F5A623; font-size:16px; font-weight:700;">
-                \u26a0\ufe0f Signal Grade: {best['grade']} — NOT A+ (No Trade)
-            </div>
-            <div style="color:#9ca3af; margin-top:4px;">
-                V6 Callisto Optimized only takes A+ entries. Wait for higher conviction setup.
-                A+ filter gives 1.66 profit factor with 23.8% max drawdown.
-            </div>
-        </div>""", unsafe_allow_html=True)
-
-    # Chart with annotations
-    if df_m15 is not None and best:
-        levels = compute_levels(df_m15, best["direction"])
-        fig = build_annotated_chart(df_m15, best, levels,
-                                   title=f"XAUUSD M15 | {best['direction']} {best['grade']} ({best['score']}/100)")
-        st.plotly_chart(fig, use_container_width=True)
-
-    # ── LAYERED ORDER SETUP (V6 Optimized) ──
-    if best and best["grade"] == "A+" and df_m15 is not None:
-        levels = compute_levels(df_m15, best["direction"])
-        if levels.get("valid"):
-            entry = levels["entry"]
-            sl = levels["sl"]
-            direction = best["direction"]
-            PIP = 0.1
-            tp_pips_list = [200, 400, 600, 800, 1000]
-
-            st.markdown(f"""<div style="background:linear-gradient(135deg, #0d1117, #1a1a2e); border:2px solid #FFD700;
-                border-radius:12px; padding:20px; margin:16px 0;">
-                <div style="color:#FFD700; font-size:20px; font-weight:700; margin-bottom:12px;">
-                    \u2b50 A+ LAYERED ORDER SETUP — {direction}
-                </div>
-                <table style="width:100%; color:#e5e7eb; border-collapse:collapse;">
-                    <tr style="border-bottom:1px solid #333;">
-                        <th style="text-align:left; padding:8px; color:#FFD700;">Order</th>
-                        <th style="text-align:center; padding:8px; color:#FFD700;">Lot</th>
-                        <th style="text-align:center; padding:8px; color:#FFD700;">Entry</th>
-                        <th style="text-align:center; padding:8px; color:#ef4444;">SL</th>
-                        <th style="text-align:center; padding:8px; color:#10b981;">TP</th>
-                        <th style="text-align:center; padding:8px; color:#10b981;">TP Pips</th>
-                        <th style="text-align:center; padding:8px; color:#10b981;">$ if Hit</th>
-                    </tr>""")
-
-            rows_html = ""
-            for i, tp_pips in enumerate(tp_pips_list):
-                if direction == "BUY":
-                    tp_price = round(entry + tp_pips * PIP, 2)
-                else:
-                    tp_price = round(entry - tp_pips * PIP, 2)
-                profit = 0.01 * tp_pips * 10  # $0.10/pip * pips
-                rows_html += f"""<tr style="border-bottom:1px solid #222;">
-                    <td style="padding:8px; color:#FFD700; font-weight:700;">#{i+1}</td>
-                    <td style="text-align:center; padding:8px;">0.01</td>
-                    <td style="text-align:center; padding:8px;">${entry:,.2f}</td>
-                    <td style="text-align:center; padding:8px; color:#ef4444;">${sl:,.2f}</td>
-                    <td style="text-align:center; padding:8px; color:#10b981;">${tp_price:,.2f}</td>
-                    <td style="text-align:center; padding:8px;">{tp_pips}</td>
-                    <td style="text-align:center; padding:8px; color:#10b981;">+${profit:.2f}</td>
-                </tr>"""
-
-            total_risk = 0.01 * 200 * 10 * 5  # 5 orders x $0.10/pip x 200 pips
-            best_profit = sum(0.01 * tp * 10 for tp in tp_pips_list)
-
-            st.markdown(f"""{rows_html}
-                </table>
-                <div style="margin-top:16px; padding-top:12px; border-top:1px solid #FFD700;">
-                    <div style="display:flex; justify-content:space-between;">
-                        <span style="color:#ef4444; font-weight:700;">
-                            Full SL Loss: -${total_risk:.2f}
-                        </span>
-                        <span style="color:#F5A623; font-weight:700;">
-                            TP1 Only + BE: +${0.01 * 200 * 10:.2f}
-                        </span>
-                        <span style="color:#10b981; font-weight:700;">
-                            All 5 TPs: +${best_profit:.2f}
-                        </span>
-                    </div>
-                    <div style="color:#9ca3af; margin-top:8px; font-size:12px;">
-                        \u2139\ufe0f After TP1 hits \u2192 Move SL for orders #2-#5 to Breakeven + 2 pips |
-                        Max 2 losses/day | London + NY sessions only
-                    </div>
-                </div>
-            </div>""", unsafe_allow_html=True)
-
-        # ── GROK AI CONFIRMATION (inline on A+ signals) ──
-        grok = st.session_state.get("grok")
-        if grok and grok.is_available:
-            st.markdown("""<div style="color:#9ca3af; font-size:12px; margin:8px 0;">
-                \U0001f9e0 Grok AI auto-confirming A+ signal...</div>""", unsafe_allow_html=True)
-            with st.spinner("Grok analyzing..."):
-                grok_cfg = SYMBOLS.get("XAUUSD", {})
-                grok_result = grok.confirm_signal("XAUUSD", grok_cfg, {
-                    "direction": best["direction"],
-                    "grade": "A+",
-                    "score": best["score"],
-                    "entry_price": entry,
-                    "confidence": best["confidence"],
-                }, df_m15)
-
-            if grok_result:
-                g_confirmed = grok_result.get("confirmed", False)
-                g_agreement = grok_result.get("agreement", "CAUTION")
-                g_conf = grok_result.get("confidence", 0)
-                g_reasoning = grok_result.get("reasoning", "")
-                g_color = "#10b981" if g_confirmed else "#ef4444" if g_agreement == "DISAGREE" else "#F5A623"
-                g_icon = "\u2705" if g_confirmed else "\u274c" if g_agreement == "DISAGREE" else "\u26a0\ufe0f"
-
-                st.markdown(f"""<div style="background:#0d1117; border:2px solid {g_color};
-                    border-radius:12px; padding:16px; margin:12px 0;">
-                    <div style="font-size:18px; font-weight:700; color:{g_color};">
-                        \U0001f9e0 GROK: {g_icon} {g_agreement} — Confidence {g_conf}%
-                    </div>
-                    <div style="color:#d1d5db; margin-top:8px; line-height:1.5;">
-                        {g_reasoning}
-                    </div>
-                </div>""", unsafe_allow_html=True)
-
-                g_adj = grok_result.get("adjustments", {})
-                if g_adj and g_adj.get("notes"):
-                    st.info(f"\U0001f9e0 Grok suggests: {g_adj.get('notes', '')}")
-
-        # ── AUTO-SEND Gold A+ signal to Telegram ──
-        notifier = st.session_state.get("notifier")
-        if notifier and notifier.bot_token:
-            PIP_GOLD = 0.1
-            tp_pips_list = [200, 400, 600, 800, 1000]
-            if best["direction"] == "BUY":
-                sl_price = round(entry - 200 * PIP_GOLD, 2)
-                tp_prices = [round(entry + tp * PIP_GOLD, 2) for tp in tp_pips_list]
-            else:
-                sl_price = round(entry + 200 * PIP_GOLD, 2)
-                tp_prices = [round(entry - tp * PIP_GOLD, 2) for tp in tp_pips_list]
-
-            tg_signal = {
-                "symbol": "XAUUSD",
-                "direction": best["direction"],
-                "grade": "A+",
-                "score": best["score"],
-                "confidence": best["confidence"],
-                "mode": "SCALP",
-                "entry_price": entry,
-                "sl": sl_price,
-                "tp_levels": tp_prices,
-                "risk_pips": 200,
-                "num_orders": 5,
-                "lot_size": 0.01,
-                "pip_value": 0.10,
-                "modules": best.get("modules", {}),
-                "confirmations": best.get("confirmations", 0),
-                "contradictions": best.get("contradictions", 0),
-            }
-
-            # Auto-send with 15-min cooldown
-            import time as _time
-            sig_key = f"XAUUSD_{best['direction']}_{best['score']}"
-            sent_signals = st.session_state.get("tg_sent_signals", {})
-            last_sent = sent_signals.get(sig_key, 0)
-
-            if _time.time() - last_sent > 900:
-                ok = notifier.send_signal_v2(tg_signal, grok_verdict=grok_result if grok_result else None)
-                if ok:
-                    sent_signals[sig_key] = _time.time()
-                    st.session_state.tg_sent_signals = sent_signals
-                    st.success("\u2705 Gold A+ signal auto-sent to Telegram!")
-            else:
-                mins_ago = int((_time.time() - last_sent) / 60)
-                st.caption(f"\U0001f4e8 Gold signal already sent {mins_ago}m ago (cooldown: 15m)")
-
-            if st.button("\U0001f504 Resend Gold Signal to Telegram", key="resend_gold_tg"):
-                ok = notifier.send_signal_v2(tg_signal, grok_verdict=grok_result if grok_result else None)
-                if ok:
-                    sent_signals[sig_key] = _time.time()
-                    st.session_state.tg_sent_signals = sent_signals
-                    st.success("\u2705 Resent!")
-
-    # Module breakdown
-    if best:
-        st.markdown("### Module Breakdown")
-        modules = best.get("modules", {})
-        module_names = {
-            "mtf_alignment": "Multi-TF Alignment",
-            "supply_demand": "Supply & Demand",
-            "fvg": "Fair Value Gap",
-            "choch": "Change of Character",
-            "killzone": "ICT Killzone",
-            "rsi_divergence": "RSI Divergence",
-            "liquidity_sweep": "Liquidity Sweep",
-            "asian_breakout": "Asian Breakout",
-            "momentum": "Momentum",
-            "overextension": "Overextension Guard",
-            "market_structure": "Market Structure",
-            "bos": "Break of Structure",
-            "order_blocks": "Order Blocks",
-            "fibonacci": "Fibonacci/OTE",
-            "displacement": "Displacement",
-            "bb_squeeze": "BB Squeeze",
-            "round_numbers": "Round Numbers",
-            # Callisto FX V6 Modules
-            "trc": "\u2b50 TRC Framework",
-            "wcr_range": "WCR Range",
-            "breaker_block": "Breaker Block",
-            "premium_discount": "Premium/Discount",
-            "candlestick": "Candlestick Patterns",
-            "risk_enforcer": "Risk Enforcer",
-        }
-
-        cols = st.columns(4)
-        for i, (key, label) in enumerate(module_names.items()):
-            mod = modules.get(key, {})
-            score = mod.get("score", 0)
-            color = "#10b981" if score > 0 else "#ef4444" if score < 0 else "#6b7280"
-            with cols[i % 4]:
-                st.markdown(f"""<div style="background:#111827; border-radius:8px; padding:10px; margin:4px 0;
-                                border-left:3px solid {color};">
-                    <div style="color:#9ca3af; font-size:11px;">{label}</div>
-                    <div style="color:{color}; font-size:18px; font-weight:700;">{'+' if score > 0 else ''}{score}</div>
-                </div>""", unsafe_allow_html=True)
-
-    # FVG Opportunities
-    if df_m15 is not None and df_h1 is not None:
-        fvg_entries = detect_fvg_entry(df_m15, df_h1)
-        if fvg_entries:
-            st.markdown("### FVG Second-Wave Entry Opportunities")
-            for opp in fvg_entries:
-                st.markdown(f"""<div class="alert-blue">
-                    <b>\U0001f535 {opp['direction']} Entry Opportunity</b><br>
-                    {opp['message']}
-                </div>""", unsafe_allow_html=True)
-
-
-# ═════════════════════════════════════════════════════════════
-# PAGE: TRADING ACADEMY
-# ═════════════════════════════════════════════════════════════
-def page_academy():
-    st.markdown("""<div class="gold-header">
-        <h1>\U0001f393 Trading Academy</h1>
-        <div class="subtitle">Learn gold trading from beginner to advanced</div>
-    </div>""", unsafe_allow_html=True)
-
-    level = st.selectbox("Choose your level",
-                        ["beginner", "intermediate", "advanced"],
-                        format_func=lambda x: x.title())
-
-    lessons = ACADEMY_LESSONS.get(level, [])
-
-    for lesson in lessons:
-        with st.expander(f"{lesson['title']}  |  {lesson.get('duration', '')}  |  {lesson.get('level', '')}",
-                        expanded=False):
-            st.markdown(lesson["content"])
-
-            # Video embed if available
-            video_url = lesson.get("video_url")
-            if video_url:
-                st.markdown("**Video Lesson:**")
-                st.video(video_url)
-
-            # Interactive chart placeholder
-            chart_type = lesson.get("interactive_chart")
-            if chart_type:
-                st.markdown("**Interactive Chart Example:**")
-                _render_lesson_chart(chart_type)
-
-
-def _render_lesson_chart(chart_type: str):
-    """Render an interactive educational chart."""
-    df = fetch_bars("XAU/USD", "1h", 100, TWELVE_DATA_API_KEY)
-    if df is None:
-        st.info("Chart data unavailable in demo mode")
-        return
-
-    df = add_indicators(df)
-    fig = go.Figure()
-
-    fig.add_trace(go.Candlestick(
-        x=df.index, open=df["open"], high=df["high"],
-        low=df["low"], close=df["close"], name="XAUUSD",
-        increasing_line_color="#10b981", decreasing_line_color="#ef4444",
-    ))
-
-    if chart_type == "trend_analysis":
-        if "ema20" in df.columns:
-            fig.add_trace(go.Scatter(x=df.index, y=df["ema20"], name="EMA20 (Fast)",
-                                    line=dict(color="#00d4ff", width=2)))
-            fig.add_trace(go.Scatter(x=df.index, y=df["ema50"], name="EMA50 (Medium)",
-                                    line=dict(color="#3b82f6", width=2)))
-
-        # Mark HH/HL or LH/LL
-        highs, lows = find_swing_points(df, left=3, right=3)
-        for h in highs[-5:]:
-            fig.add_annotation(x=df.index[h["index"]], y=h["price"],
-                             text="SH", showarrow=True, arrowhead=2,
-                             font=dict(color="#ef4444", size=10))
-        for l in lows[-5:]:
-            fig.add_annotation(x=df.index[l["index"]], y=l["price"],
-                             text="SL", showarrow=True, arrowhead=2, ay=20,
-                             font=dict(color="#10b981", size=10))
-
-    elif chart_type == "supply_demand":
-        from engine.gold_engine import _detect_sd_zones
-        zones = _detect_sd_zones(df)
-        for zone in zones[-6:]:
-            color = "rgba(16,185,129,0.2)" if zone["type"] == "demand" else "rgba(239,68,68,0.2)"
-            border = "#10b981" if zone["type"] == "demand" else "#ef4444"
-            label = f"{'Demand' if zone['type'] == 'demand' else 'Supply'} ({'Fresh' if zone['fresh'] else 'Tested'})"
-            fig.add_hrect(y0=zone["bottom"], y1=zone["top"],
-                         fillcolor=color, line=dict(color=border, width=1),
-                         annotation_text=label)
-
-    elif chart_type == "fvg":
-        fvgs = detect_fvg_candles(df, min_size=0.5)
-        for fvg in fvgs[-5:]:
-            color = "rgba(59,130,246,0.2)"
-            fig.add_hrect(y0=fvg["bottom"], y1=fvg["top"],
-                         fillcolor=color,
-                         line=dict(color="#3b82f6", width=1, dash="dot"),
-                         annotation_text=f"{'Bullish' if fvg['type'] == 'bullish' else 'Bearish'} FVG")
-
-    fig.update_layout(
-        template="plotly_dark", paper_bgcolor="#0a0e17", plot_bgcolor="#0a0e17",
-        height=450, xaxis_rangeslider_visible=False,
-        margin=dict(l=50, r=50, t=30, b=30),
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-
-# ═════════════════════════════════════════════════════════════
-# PAGE: SIGNAL MANUAL
-# ═════════════════════════════════════════════════════════════
-def page_manual():
-    st.markdown("""<div class="gold-header">
-        <h1>\U0001f4d6 Signal Manual</h1>
-        <div class="subtitle">How to read, understand, and trade our signals</div>
-    </div>""", unsafe_allow_html=True)
-
-    lang = st.radio("Language / 语言", ["English", "中文"], horizontal=True, key="manual_lang")
-    manual = SIGNAL_MANUAL if lang == "English" else SIGNAL_MANUAL_ZH
-
-    for section in manual["sections"]:
-        with st.expander(section["title"], expanded=(section["id"] == "intro")):
-            st.markdown(section["content"])
-
-
-# ═════════════════════════════════════════════════════════════
-# PAGE: ECONOMIC CALENDAR
-# ═════════════════════════════════════════════════════════════
-def page_calendar():
-    st.markdown("""<div class="gold-header">
-        <h1>\U0001f4c5 Economic Calendar</h1>
-        <div class="subtitle">Events that move gold | Trading Economics API</div>
-    </div>""", unsafe_allow_html=True)
-
-    events = fetch_economic_calendar(TE_API_KEY)
-    gold_events = get_gold_impact_events(events)
-
-    # High impact warning
-    warning = is_high_impact_soon(events)
-    if warning.get("warning"):
-        st.markdown(f"""<div class="alert-red">
-            <b>\u26a0\ufe0f HIGH IMPACT EVENT IN {warning['hours_until']:.1f} HOURS</b><br>
-            <b>{warning['event']}</b><br>
-            {warning['impact'].get('typical_impact', '')}<br>
-            <i>{warning['impact'].get('volatility', '')}</i><br><br>
-            <b>Recommendation:</b> {warning['recommendation']}
-        </div>""", unsafe_allow_html=True)
-        st.markdown("")
-
-    # Events table
-    if gold_events:
-        for event in gold_events:
-            importance = event.get("importance", 0)
-            if importance >= 3:
-                border_color = "#ef4444"
-                badge = "\U0001f534 HIGH"
-            elif importance >= 2:
-                border_color = "#F5A623"
-                badge = "\U0001f7e1 MEDIUM"
-            else:
-                border_color = "#6b7280"
-                badge = "\u26aa LOW"
-
-            impact = event.get("gold_impact", {})
-
-            st.markdown(f"""<div style="background:#111827; border-left:4px solid {border_color};
-                            border-radius:8px; padding:14px; margin:8px 0;">
-                <div style="display:flex; justify-content:space-between;">
-                    <div>
-                        <b style="color:#e5e7eb;">{event['event']}</b>
-                        <span style="color:#6b7280; font-size:12px; margin-left:8px;">{event['country']}</span>
-                    </div>
-                    <div style="font-size:12px;">{badge}</div>
-                </div>
-                <div style="color:#9ca3af; font-size:12px; margin-top:6px;">
-                    Time: {event.get('time', 'TBD')} |
-                    Forecast: {event.get('forecast', 'N/A')} |
-                    Previous: {event.get('previous', 'N/A')}
-                </div>
-                <div style="color:#00d4ff; font-size:12px; margin-top:4px;">
-                    <b>Gold Impact:</b> {impact.get('typical_impact', 'N/A')}
-                </div>
-                <div style="color:#6b7280; font-size:11px; margin-top:2px;">
-                    {impact.get('explanation', '')} | {impact.get('volatility', '')}
-                </div>
-            </div>""", unsafe_allow_html=True)
-    else:
-        st.info("No gold-impacting events found for the next 7 days.")
-
-
-# ═════════════════════════════════════════════════════════════
-# PAGE: RISK CALCULATOR
-# ═════════════════════════════════════════════════════════════
-def page_risk_calc():
-    st.markdown("""<div class="gold-header">
-        <h1>\U0001f9ee Risk Calculator</h1>
-        <div class="subtitle">Position sizing for XAUUSD | Never risk more than you should</div>
-    </div>""", unsafe_allow_html=True)
-
-    col1, col2 = st.columns(2)
-    with col1:
-        balance = st.number_input("Account Balance ($)", value=st.session_state.balance,
-                                  min_value=100.0, step=100.0)
-        sl_pips = st.number_input("Stop Loss (pips)", value=200.0, min_value=1.0, step=10.0,
-                                  help="V6 Optimized: 200 pips SL. Gold 1 pip = $0.10. 200 pips = $20.00 move")
-        entry_price = st.number_input("Entry Price ($)", value=3100.0, step=0.10)
-
-    with col2:
-        direction = st.selectbox("Direction", ["BUY", "SELL"])
-        risk_pct = st.slider("Custom Risk %", min_value=0.5, max_value=10.0, value=2.0, step=0.5)
-
-    # Calculate
-    rm = st.session_state.risk_manager
-    rm.current_balance = balance
-    tiers = rm.calculate_all_tiers(sl_pips)
-
-    st.markdown("### Position Size by Risk Tier")
-    col1, col2, col3 = st.columns(3)
-
-    for i, (tier_name, tier_data) in enumerate(tiers.items()):
-        with [col1, col2, col3][i]:
-            color = "#10b981" if tier_name == "conservative" else "#F5A623" if tier_name == "moderate" else "#ef4444"
-            st.markdown(f"""<div class="metric-card" style="border-color:{color}">
-                <div class="label">{tier_name.title()} ({tier_data['risk_pct']}%)</div>
-                <div class="value">{tier_data['lot']} lot</div>
-                <div style="color:#9ca3af; font-size:12px;">Risk: ${tier_data['risk_usd']:.2f}</div>
-            </div>""", unsafe_allow_html=True)
-
-    # Custom calculation
-    custom_lot = rm.calculate_lot(risk_pct, sl_pips)
-    custom_risk = balance * (risk_pct / 100)
-    st.markdown(f"""
-    ### Custom: {risk_pct}% Risk
-    **Lot Size:** {custom_lot} | **Risk Amount:** ${custom_risk:.2f} | **SL Distance:** {sl_pips} pips (${sl_pips * 0.1:.2f})
-    """)
-
-    # 10 TP levels preview
-    st.markdown("### 10 TP Level Preview")
-    if direction == "BUY":
-        sl_price = entry_price - sl_pips * SYMBOL_PIP
-    else:
-        sl_price = entry_price + sl_pips * SYMBOL_PIP
-
-    tp_levels = compute_10tp_levels(entry_price, sl_price, direction)
-    lot_pcts = STRATEGIES[st.session_state.tp_strategy]["lot_pct"]
-
-    tp_data = []
-    for i, tp in enumerate(tp_levels):
-        tp_data.append({
-            "TP": f"TP{i+1}",
-            "Price": f"${tp:.2f}",
-            "Close %": f"{lot_pcts[i]*100:.0f}%",
-            "Close Lot": f"{custom_lot * lot_pcts[i]:.2f}",
-            "Pips from Entry": f"{abs(tp - entry_price)/SYMBOL_PIP:.0f}",
-        })
-
-    st.dataframe(pd.DataFrame(tp_data), use_container_width=True, hide_index=True)
-
-
-# ═════════════════════════════════════════════════════════════
-# PAGE: LIVE TRADE TRACKER
-# ═════════════════════════════════════════════════════════════
-def page_tracker():
-    if st_autorefresh:
-        st_autorefresh(interval=15000, limit=None, key="tracker_refresh")
-
-    st.markdown("""<div class="gold-header">
-        <h1>\U0001f4cc Live Trade Tracker</h1>
-        <div class="subtitle">10-TP partial close system | {strategy}</div>
-    </div>""".format(strategy=STRATEGIES[st.session_state.tp_strategy]["name"]),
-    unsafe_allow_html=True)
-
-    tm = st.session_state.trade_manager
-
-    # Active trades
-    st.markdown("### Active Trades")
-    if tm.active_trades:
-        for tid, trade in tm.active_trades.items():
-            tp_bar = ""
-            for i in range(10):
-                if i < trade.tp_hit:
-                    tp_bar += '<div class="tp-bar tp-hit" style="width:9%">&nbsp;</div>'
-                else:
-                    tp_bar += '<div class="tp-bar tp-pending" style="width:9%">&nbsp;</div>'
-
-            color = "signal-buy" if trade.direction == "BUY" else "signal-sell"
-            st.markdown(f"""<div class="signal-card {color}">
-                <div style="font-size:16px; font-weight:700;">
-                    {trade.direction} XAUUSD | {trade.grade} | Entry: ${trade.entry_price:.2f}
-                </div>
-                <div style="margin:8px 0;">
-                    SL: ${trade.sl:.2f} | Lot: {trade.remaining_lot}/{trade.initial_lot} |
-                    TPs Hit: {trade.tp_hit}/10
-                </div>
-                <div style="display:flex; gap:2px; margin:8px 0;">{tp_bar}</div>
-            </div>""", unsafe_allow_html=True)
-
-            # Trade actions log
-            with st.expander(f"Trade Log — {tid}"):
-                for action in trade.actions:
-                    st.text(f"{action.get('time', '')}: {action.get('action', '')} — {action.get('detail', action.get('reason', ''))}")
-    else:
-        st.info("No active trades. Signals will appear here when the engine fires.")
-
-    # Recent closed trades
-    st.markdown("### Recently Closed Trades")
-    if tm.closed_trades:
-        for trade in reversed(tm.closed_trades[-10:]):
-            pnl_color = "#10b981" if trade.pnl_usd > 0 else "#ef4444"
-            emoji = "\U0001f4b0" if trade.pnl_usd > 0 else "\U0001f534"
-            st.markdown(f"""<div style="background:#111827; border-radius:8px; padding:12px; margin:4px 0;
-                            border-left:3px solid {pnl_color};">
-                {emoji} <b>{trade.direction}</b> @ ${trade.entry_price:.2f} |
-                TPs Hit: {trade.tp_hit}/10 |
-                PnL: <span style="color:{pnl_color}">{'+'if trade.pnl_usd>0 else ''}${trade.pnl_usd:.2f}</span> |
-                {trade.close_reason}
-            </div>""", unsafe_allow_html=True)
-    else:
-        st.info("No closed trades yet.")
-
-
-# ═════════════════════════════════════════════════════════════
-# PAGE: PERFORMANCE SCOREBOARD
-# ═════════════════════════════════════════════════════════════
-def page_scoreboard():
-    st.markdown("""<div class="gold-header">
-        <h1>\U0001f3c6 Performance Scoreboard</h1>
-        <div class="subtitle">Signal performance metrics | Transparency builds trust</div>
-    </div>""", unsafe_allow_html=True)
-
-    tm = st.session_state.trade_manager
-    stats = tm.get_performance_stats()
-
-    # Key metrics
-    col1, col2, col3, col4 = st.columns(4)
-    metrics = [
-        ("Total Trades", stats["total_trades"], "#F5A623"),
-        ("Win Rate", f"{stats['win_rate']}%", "#10b981" if stats["win_rate"] > 50 else "#ef4444"),
-        ("Total PnL", f"${stats['total_pnl']:+.2f}", "#10b981" if stats["total_pnl"] > 0 else "#ef4444"),
-        ("Profit Factor", f"{stats['profit_factor']}", "#10b981" if stats["profit_factor"] > 1 else "#ef4444"),
-    ]
-    for i, (label, value, color) in enumerate(metrics):
-        with [col1, col2, col3, col4][i]:
-            st.markdown(f"""<div class="metric-card">
-                <div class="label">{label}</div>
-                <div class="value" style="color:{color}">{value}</div>
-            </div>""", unsafe_allow_html=True)
-
-    col1, col2, col3, col4 = st.columns(4)
-    metrics2 = [
-        ("Wins", stats["wins"], "#10b981"),
-        ("Losses", stats["losses"], "#ef4444"),
-        ("Best Trade", f"${stats['best_trade']:+.2f}", "#10b981"),
-        ("Max Drawdown", f"${stats['max_drawdown']:.2f}", "#ef4444"),
-    ]
-    for i, (label, value, color) in enumerate(metrics2):
-        with [col1, col2, col3, col4][i]:
-            st.markdown(f"""<div class="metric-card">
-                <div class="label">{label}</div>
-                <div class="value" style="color:{color}">{value}</div>
-            </div>""", unsafe_allow_html=True)
-
-    # Equity curve
-    cumulative = stats.get("cumulative_pnl", [])
-    if cumulative:
-        st.markdown("### Equity Curve")
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            y=cumulative, mode="lines+markers",
-            line=dict(color="#00d4ff", width=2),
-            marker=dict(size=4),
-            fill="tozeroy",
-            fillcolor="rgba(245,166,35,0.1)",
-        ))
-        fig.update_layout(
-            template="plotly_dark", paper_bgcolor="#0a0e17", plot_bgcolor="#0a0e17",
-            height=350, yaxis_title="Cumulative PnL ($)",
-            xaxis_title="Trade Number",
-            margin=dict(l=50, r=50, t=30, b=30),
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("Performance data will appear once trades are recorded.")
-
-
-# ═════════════════════════════════════════════════════════════
-# PAGE: MARKET REGIME
-# ═════════════════════════════════════════════════════════════
-def page_regime():
-    if st_autorefresh:
-        st_autorefresh(interval=30000, limit=None, key="regime_refresh")
-
-    st.markdown("""<div class="gold-header">
-        <h1>\U0001f30d Market Regime Indicator</h1>
-        <div class="subtitle">Is gold trending, ranging, or volatile?</div>
-    </div>""", unsafe_allow_html=True)
-
-    overview = st.session_state.scanner.get_market_overview()
-
-    # Regime detection
-    h4_trend = overview.get("h4_trend", "neutral")
-    h1_trend = overview.get("h1_trend", "neutral")
-    structure = overview.get("structure", "unknown")
-    atr = overview.get("atr", 0)
-    rsi = overview.get("rsi", 50)
-
-    # Determine regime
-    if "bull" in h4_trend and "bull" in h1_trend:
-        regime = "STRONG UPTREND"
-        regime_color = "#10b981"
-        regime_desc = "Gold is in a confirmed uptrend across H4 and H1. Look for BUY signals on pullbacks."
-    elif "bear" in h4_trend and "bear" in h1_trend:
-        regime = "STRONG DOWNTREND"
-        regime_color = "#ef4444"
-        regime_desc = "Gold is in a confirmed downtrend across H4 and H1. Look for SELL signals on rallies."
-    elif h4_trend != h1_trend and "neutral" not in (h4_trend, h1_trend):
-        regime = "TRANSITION"
-        regime_color = "#F5A623"
-        regime_desc = "H4 and H1 are showing different trends. Market may be transitioning. Be cautious with new entries."
-    else:
-        regime = "RANGING / CONSOLIDATION"
-        regime_color = "#6b7280"
-        regime_desc = "Gold is consolidating. Wait for a breakout with clear structure before entering."
-
-    st.markdown(f"""<div style="background:#111827; border:2px solid {regime_color};
-                    border-radius:12px; padding:24px; text-align:center; margin:20px 0;">
-        <div style="color:{regime_color}; font-size:32px; font-weight:700; font-family:'Space Mono',monospace;">
-            {regime}
-        </div>
-        <div style="color:#9ca3af; font-size:14px; margin-top:8px;">{regime_desc}</div>
-    </div>""", unsafe_allow_html=True)
-
-    # Timeframe breakdown
-    col1, col2, col3, col4 = st.columns(4)
-    tf_data = [
-        ("H4 Trend", h4_trend.replace("_", " ").title()),
-        ("H1 Trend", h1_trend.replace("_", " ").title()),
-        ("Structure", structure.title()),
-        ("Volatility", f"ATR ${atr:.2f}"),
-    ]
-    for i, (label, value) in enumerate(tf_data):
-        with [col1, col2, col3, col4][i]:
-            st.markdown(f"""<div class="metric-card">
-                <div class="label">{label}</div>
-                <div class="value" style="font-size:18px">{value}</div>
-            </div>""", unsafe_allow_html=True)
-
-    # Regime chart
-    df = fetch_bars("XAU/USD", "4h", 100, TWELVE_DATA_API_KEY)
-    if df is not None:
-        df = add_indicators(df)
-        fig = go.Figure()
-        fig.add_trace(go.Candlestick(
-            x=df.index, open=df["open"], high=df["high"],
-            low=df["low"], close=df["close"], name="XAUUSD H4",
-            increasing_line_color="#10b981", decreasing_line_color="#ef4444",
-        ))
-        if "ema50" in df.columns:
-            fig.add_trace(go.Scatter(x=df.index, y=df["ema50"], name="EMA50",
-                                    line=dict(color="#3b82f6", width=2)))
-        if "ema200" in df.columns:
-            fig.add_trace(go.Scatter(x=df.index, y=df["ema200"], name="EMA200",
-                                    line=dict(color="#ef4444", width=2, dash="dot")))
-        if "bb_upper" in df.columns:
-            fig.add_trace(go.Scatter(x=df.index, y=df["bb_upper"], name="BB Upper",
-                                    line=dict(color="rgba(168,85,247,0.3)", width=1)))
-            fig.add_trace(go.Scatter(x=df.index, y=df["bb_lower"], name="BB Lower",
-                                    line=dict(color="rgba(168,85,247,0.3)", width=1),
-                                    fill="tonexty", fillcolor="rgba(168,85,247,0.05)"))
-
-        fig.update_layout(
-            template="plotly_dark", paper_bgcolor="#0a0e17", plot_bgcolor="#0a0e17",
-            height=500, xaxis_rangeslider_visible=False,
-            title=f"XAUUSD H4 | Regime: {regime}",
-            margin=dict(l=50, r=50, t=40, b=30),
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-
-# ═════════════════════════════════════════════════════════════
-# PAGE: BACKTEST ENGINE
-# ═════════════════════════════════════════════════════════════
-def page_backtest():
-    # Restrict to creator only
-    CREATOR_EMAIL = "junkiatyeo96@gmail.com"
-    user_email = st.session_state.get("user", {}).get("email", "")
-    if user_email.lower() != CREATOR_EMAIL.lower():
-        st.markdown("""<div class="gold-header">
-            <h1>\U0001f52c Backtest Engine</h1>
-            <div class="subtitle">Admin-only feature</div>
-        </div>""", unsafe_allow_html=True)
-        st.warning("The Backtest Engine is restricted to the platform administrator. "
-                   "Contact the Alpha FX Hub team for access.")
-        return
-
-    st.markdown("""<div class="gold-header">
-        <h1>\U0001f52c Backtest Engine</h1>
-        <div class="subtitle">Test our strategy against historical gold data</div>
-    </div>""", unsafe_allow_html=True)
-
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        bt_strategy = st.selectbox("TP Strategy", ["split_15_10", "equal_10"],
-                                    format_func=lambda x: "15/10 Split + Trailing" if x == "split_15_10" else "Equal 10%",
-                                    key="bt_strategy")
-    with col2:
-        period_options = {
-            "1 Day": 1, "3 Days": 3, "1 Week": 5, "2 Weeks": 10,
-            "1 Month": 22, "3 Months": 66, "6 Months": 132, "12 Months": 264,
-        }
-        bt_period_label = st.selectbox("Test Period", list(period_options.keys()), index=4, key="bt_period")
-        bt_days = period_options[bt_period_label]
-    with col3:
-        bt_balance = st.number_input("Starting Balance ($)", value=10000, step=1000, key="bt_balance")
-    with col4:
-        bt_risk = st.selectbox("Risk Per Trade", [2.0, 3.0, 5.0], index=0, key="bt_risk",
-                                format_func=lambda x: f"{x:.0f}%")
-
-    if st.button("\U0001f680 Run Backtest", use_container_width=True, type="primary"):
-        with st.spinner("Running backtest... Analyzing historical gold data..."):
-            try:
-                results = run_backtest(
-                    strategy=bt_strategy,
-                    months=1,
-                    starting_balance=bt_balance,
-                    risk_pct=bt_risk,
-                    days=bt_days,
-                )
-                st.session_state.bt_results = results
-            except Exception as e:
-                st.error(f"Backtest error: {e}")
-                logger.error(f"Backtest failed: {e}", exc_info=True)
-                return
-
-    results = st.session_state.get("bt_results")
-    if results is None:
-        st.info("Configure parameters above and click **Run Backtest** to test the strategy against historical data.")
-        return
-
-    # ── Summary Cards ──
-    st.markdown("### \U0001f4ca Performance Summary")
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Total Trades", results.get("total_trades", 0))
-    c2.metric("Win Rate", f"{results.get('win_rate_pct', 0):.1f}%")
-    c3.metric("Profit Factor", f"{results.get('profit_factor', 0):.2f}")
-    c4.metric("Total Return", f"${results.get('total_return_usd', 0):,.2f}",
-              delta=f"{results.get('total_return_pct', 0):.1f}%")
-    c5.metric("Max Drawdown", f"${results.get('max_drawdown_usd', 0):,.2f}",
-              delta=f"-{results.get('max_drawdown_pct', 0):.1f}%", delta_color="inverse")
-
-    c6, c7, c8, c9 = st.columns(4)
-    c6.metric("Wins / Losses", f"{results.get('wins', 0)} / {results.get('losses', 0)}")
-    c7.metric("Avg Win", f"${results.get('avg_win', 0):,.2f}")
-    c8.metric("Avg Loss", f"${results.get('avg_loss', 0):,.2f}")
-    c9.metric("Avg TPs Hit", f"{results.get('avg_tps_reached', 0):.1f} / 10")
-
-    # ── Equity Curve ──
-    equity_data = results.get("equity_curve", [])
-    if equity_data:
-        st.markdown("### \U0001f4c8 Equity Curve")
-        eq_df = pd.DataFrame(equity_data, columns=["time", "balance"])
-        eq_df["time"] = pd.to_datetime(eq_df["time"])
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=eq_df["time"], y=eq_df["balance"],
-            mode="lines", name="Equity",
-            line=dict(color="#00d4ff", width=2),
-            fill="tozeroy", fillcolor="rgba(0,212,255,0.08)",
-        ))
-        fig.add_hline(y=bt_balance, line_dash="dash", line_color="#6b7280",
-                      annotation_text="Starting Balance")
-        fig.update_layout(
-            template="plotly_dark", paper_bgcolor="#0a0e17", plot_bgcolor="#0a0e17",
-            height=400, margin=dict(l=50, r=50, t=30, b=30),
-            yaxis_title="Account Balance ($)", xaxis_title="Date",
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-    # ── Win Rate Breakdown ──
-    col_a, col_b = st.columns(2)
-
-    with col_a:
-        st.markdown("### \U0001f3af Win Rate by Grade")
-        grade_data = results.get("by_grade", {})
-        if grade_data:
-            grade_df = pd.DataFrame([
-                {"Grade": g, "Win Rate": f"{d.get('win_rate', 0):.1f}%", "Trades": d.get("trades", 0)}
-                for g, d in grade_data.items() if d.get("trades", 0) > 0
-            ])
-            st.dataframe(grade_df, use_container_width=True, hide_index=True)
-
-    with col_b:
-        st.markdown("### \U0001f3af Win Rate by Confidence")
-        conf_data = results.get("by_confidence", {})
-        if conf_data:
-            conf_df = pd.DataFrame([
-                {"Confidence": c, "Win Rate": f"{d.get('win_rate', 0):.1f}%", "Trades": d.get("trades", 0)}
-                for c, d in conf_data.items() if d.get("trades", 0) > 0
-            ])
-            st.dataframe(conf_df, use_container_width=True, hide_index=True)
-
-    # ── Session Performance ──
-    session_data = results.get("by_session", {})
-    if session_data:
-        st.markdown("### \U0001f553 Performance by Session")
-        sess_df = pd.DataFrame([
-            {"Session": s, "Win Rate": f"{d.get('win_rate', 0):.1f}%",
-             "Trades": d.get("trades", 0), "Avg P&L": f"${d.get('avg_pnl', 0):,.2f}"}
-            for s, d in session_data.items() if d.get("trades", 0) > 0
-        ])
-        st.dataframe(sess_df, use_container_width=True, hide_index=True)
-
-    # ── Monthly Breakdown ──
-    monthly = results.get("monthly", [])
-    if monthly:
-        st.markdown("### \U0001f4c5 Monthly Breakdown")
-        month_df = pd.DataFrame(monthly)
-        if not month_df.empty:
-            st.dataframe(month_df, use_container_width=True, hide_index=True)
-
-    # ── Trade Log ──
-    trades_log = results.get("trades", [])
-    if trades_log:
-        with st.expander(f"Full Trade Log ({len(trades_log)} trades)"):
-            log_df = pd.DataFrame(trades_log)
-            display_cols = [c for c in ["trade_num", "entry_time", "direction", "entry_price",
-                                         "sl", "grade", "confidence", "tps_reached", "pnl",
-                                         "r_multiple", "status"] if c in log_df.columns]
-            if display_cols:
-                st.dataframe(log_df[display_cols], use_container_width=True, hide_index=True)
-
-
-# ═════════════════════════════════════════════════════════════
-# PAGE: AI LEARNING INSIGHTS
-# ═════════════════════════════════════════════════════════════
-def page_ai_insights():
-    # Restrict to creator only
-    CREATOR_EMAIL = "junkiatyeo96@gmail.com"
-    user_email = st.session_state.get("user", {}).get("email", "")
-    if user_email.lower() != CREATOR_EMAIL.lower():
-        st.markdown("""<div class="gold-header">
-            <h1>AI Learning Insights</h1>
-            <div class="subtitle">Admin-only feature</div>
-        </div>""", unsafe_allow_html=True)
-        st.warning("AI Learning Insights is restricted to the platform administrator.")
-        return
-
-    st.markdown("""<div class="gold-header">
-        <h1>AI Learning Insights</h1>
-        <div class="subtitle">Adaptive engine that learns from your trade history to improve signals</div>
-    </div>""", unsafe_allow_html=True)
-
-    learner = st.session_state.adaptive_learner
-    cloud = st.session_state.get("cloud_sync")
-    profile = learner.profile
-
-    # ── Refresh / Re-learn Button ──
-    col1, col2 = st.columns([3, 1])
-    with col2:
-        if st.button("Re-Analyze Trades", type="primary", use_container_width=True):
-            # Try cloud first, then fall back to local
-            trades_data = []
-            if cloud:
-                trades_data = cloud.fetch_trades_for_learning(limit=500)
-            if not trades_data:
-                # Fall back to local closed trades
-                trades_data = [t.to_dict() for t in st.session_state.trade_manager.closed_trades]
-            if trades_data:
-                profile = learner.analyze(trades_data)
-                st.success(f"Analyzed {len(trades_data)} trades — insights updated!")
-                st.rerun()
-            else:
-                st.warning("No trade history yet. Complete some trades first!")
-
-    with col1:
-        st.markdown(f"**Trades Analyzed:** {profile.total_trades_analyzed}")
-        if profile.last_updated:
-            st.caption(f"Last updated: {profile.last_updated[:19]}")
-
-    st.divider()
-
-    # ── Key Insights ──
-    if profile.insights:
-        st.markdown("### Key Insights")
-        for insight in profile.insights:
-            # Color-code based on content
-            if any(w in insight.lower() for w in ["strong", "well", "sweet spot", "best"]):
-                st.markdown(f"""<div class="alert-green" style="margin:6px 0; padding:10px 14px;">
-                    {insight}</div>""", unsafe_allow_html=True)
-            elif any(w in insight.lower() for w in ["weak", "underperform", "risky", "avoid", "caution", "hurt"]):
-                st.markdown(f"""<div class="alert-red" style="margin:6px 0; padding:10px 14px;">
-                    {insight}</div>""", unsafe_allow_html=True)
-            else:
-                st.markdown(f"""<div class="alert-yellow" style="margin:6px 0; padding:10px 14px;">
-                    {insight}</div>""", unsafe_allow_html=True)
-    else:
-        st.info("No insights yet — need at least 10 closed trades for the AI to start learning.")
-
-    st.divider()
-
-    # ── Weight Tables ──
-    col_a, col_b = st.columns(2)
-
-    with col_a:
-        st.markdown("### Session Performance Weights")
-        session_df = pd.DataFrame([
-            {"Session": k, "Weight": f"{v:.2f}",
-             "Signal": "Boost" if v > 1.1 else ("Reduce" if v < 0.8 else "Normal")}
-            for k, v in profile.session_weights.items()
-        ])
-        st.dataframe(session_df, use_container_width=True, hide_index=True)
-
-        st.markdown("### Day-of-Week Weights")
-        day_df = pd.DataFrame([
-            {"Day": k, "Weight": f"{v:.2f}",
-             "Signal": "Boost" if v > 1.1 else ("Reduce" if v < 0.8 else "Normal")}
-            for k, v in profile.day_weights.items()
-        ])
-        st.dataframe(day_df, use_container_width=True, hide_index=True)
-
-    with col_b:
-        st.markdown("### Grade Weights")
-        grade_df = pd.DataFrame([
-            {"Grade": k, "Weight": f"{v:.2f}",
-             "Signal": "Boost" if v > 1.1 else ("Reduce" if v < 0.8 else "Normal")}
-            for k, v in profile.grade_weights.items()
-        ])
-        st.dataframe(grade_df, use_container_width=True, hide_index=True)
-
-        st.markdown("### Trend Alignment")
-        trend_df = pd.DataFrame([
-            {"Trend": k, "Weight": f"{v:.2f}",
-             "Signal": "Boost" if v > 1.1 else ("Reduce" if v < 0.8 else "Normal")}
-            for k, v in profile.trend_weights.items()
-        ])
-        st.dataframe(trend_df, use_container_width=True, hide_index=True)
-
-        st.markdown("### Volatility Regime")
-        vol_df = pd.DataFrame([
-            {"Regime": k, "Weight": f"{v:.2f}",
-             "Signal": "Boost" if v > 1.1 else ("Reduce" if v < 0.8 else "Normal")}
-            for k, v in profile.volatility_weights.items()
-        ])
-        st.dataframe(vol_df, use_container_width=True, hide_index=True)
-
-    st.divider()
-
-    # ── Optimal Indicator Ranges ──
-    st.markdown("### Optimal Indicator Ranges (from winning trades)")
-    ind_col1, ind_col2, ind_col3 = st.columns(3)
-    with ind_col1:
-        st.metric("RSI Sweet Spot", f"{profile.optimal_rsi_range[0]:.0f} - {profile.optimal_rsi_range[1]:.0f}")
-    with ind_col2:
-        st.metric("Min ADX", f"{profile.optimal_adx_min:.0f}")
-    with ind_col3:
-        st.metric("Best Strategy", profile.best_strategy)
-
-    # ── Cloud Sync Status ──
-    st.divider()
-    st.markdown("### Cloud Sync Status")
-    if cloud and st.session_state.get("user"):
-        st.success("Connected to Supabase — trades auto-sync to cloud")
-        sync_col1, sync_col2 = st.columns(2)
-        with sync_col1:
-            if st.button("Sync All Local Trades to Cloud"):
-                local_trades = [t.to_dict() for t in st.session_state.trade_manager.closed_trades]
-                if local_trades:
-                    count = cloud.upload_trades_batch(local_trades)
-                    st.success(f"Synced {count} trades to cloud!")
-                else:
-                    st.info("No local trades to sync.")
-        with sync_col2:
-            if st.button("Load Trades from Cloud"):
-                cloud_trades = cloud.fetch_trades(limit=200)
-                st.info(f"Found {len(cloud_trades)} trades in cloud.")
-    else:
-        st.warning("Cloud sync not connected — trades saved locally only. Log in to enable cloud sync.")
-
-    # ── SQL Setup Helper ──
-    with st.expander("Supabase Setup (run once in SQL Editor)"):
-        st.code(CloudTradeSync.ensure_table_sql(None), language="sql")
-        st.caption("Copy this SQL and run it in your Supabase Dashboard > SQL Editor to create the trade_history table.")
-
-
-# ═════════════════════════════════════════════════════════════
-# PAGE: DECISION ASSISTANT
-# ═════════════════════════════════════════════════════════════
-
-def page_decision_assistant():
-    """Semi-automated Gold Decision Assistant — NOT auto-trading."""
-    from decision_assistant import BiasEngine, EntryZoneDetector, MarketBias
-
-    st.markdown("""<div class="gold-header">
-        <h1>\U0001f916 Gold Decision Assistant</h1>
-        <div class="subtitle">Semi-Automated | H1 Bias + M15 Entry | YOU Trade, System Assists</div>
-    </div>""", unsafe_allow_html=True)
-
-    # Initialize session state
-    if "da_active_trade" not in st.session_state:
-        st.session_state.da_active_trade = None
-    if "da_last_zone" not in st.session_state:
-        st.session_state.da_last_zone = None
-    if "da_zones_today" not in st.session_state:
-        st.session_state.da_zones_today = 0
-
-    # Auto-refresh every 30s
-    if st_autorefresh:
-        st_autorefresh(interval=30000, limit=None, key="da_refresh")
-
-    # ── FETCH LIVE DATA ──
-    price = fetch_price(api_key=TWELVE_DATA_API_KEY)
-    m15_df = fetch_bars(interval="15min", outputsize=200, api_key=TWELVE_DATA_API_KEY)
-    h1_df = fetch_bars(interval="1h", outputsize=100, api_key=TWELVE_DATA_API_KEY)
-
-    now_utc = datetime.now(timezone.utc)
-    hour = now_utc.hour
-
-    # Session detection
-    session_name = "OFF"
-    if 7 <= hour < 10:
-        session_name = "LONDON"
-    elif 12 <= hour < 15:
-        session_name = "NEW YORK"
-    elif 12 <= hour < 16:
-        session_name = "LN OVERLAP"
-    elif 5 <= hour < 7:
-        session_name = "PRE-LONDON"
-    elif 0 <= hour < 5 or hour >= 21:
-        session_name = "ASIAN"
-
-    # ── A. MARKET BIAS ENGINE ──
-    bias_engine = BiasEngine()
-    bias = bias_engine.analyze(m15_df, h1_df) if m15_df is not None and h1_df is not None else MarketBias()
-
-    # Top metrics row
-    col1, col2, col3, col4, col5 = st.columns(5)
-
-    with col1:
-        st.markdown(f"""<div class="metric-card">
-            <div class="label">XAUUSD</div>
-            <div class="value">${price:.2f}</div>
-        </div>""", unsafe_allow_html=True)
-
-    with col2:
-        bias_color = "#10b981" if bias.bias == "BULLISH" else ("#ef4444" if bias.bias == "BEARISH" else "#6b7280")
-        st.markdown(f"""<div class="metric-card">
-            <div class="label">Market Bias</div>
-            <div class="value" style="color:{bias_color}">{bias.bias}</div>
-        </div>""", unsafe_allow_html=True)
-
-    with col3:
-        st.markdown(f"""<div class="metric-card">
-            <div class="label">Strength</div>
-            <div class="value">{bias.strength}</div>
-        </div>""", unsafe_allow_html=True)
-
-    with col4:
-        sess_color = "#10b981" if session_name in ("LONDON", "NEW YORK", "LN OVERLAP") else "#6b7280"
-        st.markdown(f"""<div class="metric-card">
-            <div class="label">Session</div>
-            <div class="value" style="color:{sess_color}">{session_name}</div>
-        </div>""", unsafe_allow_html=True)
-
-    with col5:
-        st.markdown(f"""<div class="metric-card">
-            <div class="label">H1 Structure</div>
-            <div class="value">{bias.h1_structure or 'N/A'}</div>
-        </div>""", unsafe_allow_html=True)
-
-    st.markdown("")
-
-    # ── MARKET STRUCTURE DETAILS ──
-    col_left, col_right = st.columns([3, 2])
-
-    with col_left:
-        st.markdown("### Market Structure")
-
-        struct_col1, struct_col2, struct_col3 = st.columns(3)
-        with struct_col1:
-            st.metric("Key High", f"${bias.key_high:.2f}" if bias.key_high else "—")
-            st.metric("EMA 50", f"${bias.ema50:.2f}" if bias.ema50 else "—")
-        with struct_col2:
-            st.metric("Key Low", f"${bias.key_low:.2f}" if bias.key_low else "—")
-            st.metric("EMA 200", f"${bias.ema200:.2f}" if bias.ema200 else "—")
-        with struct_col3:
-            st.metric("ATR (H1)", f"${bias.atr:.2f}" if bias.atr else "—")
-            st.metric("Setups Today", f"{st.session_state.da_zones_today}/3")
-
-        # Liquidity levels
-        if bias.liquidity_above or bias.liquidity_below:
-            st.markdown("**Liquidity Levels**")
-            liq_col1, liq_col2 = st.columns(2)
-            with liq_col1:
-                st.markdown("Sell-side (above):")
-                for lvl in (bias.liquidity_above or [])[:4]:
-                    dist = lvl - price
-                    st.markdown(f"&nbsp;&nbsp; `${lvl:.2f}` (+${dist:.1f})")
-            with liq_col2:
-                st.markdown("Buy-side (below):")
-                for lvl in (bias.liquidity_below or [])[:4]:
-                    dist = price - lvl
-                    st.markdown(f"&nbsp;&nbsp; `${lvl:.2f}` (-${dist:.1f})")
-
-    with col_right:
-        # ── B. SMART ENTRY ZONE ──
-        st.markdown("### Entry Zone")
-
-        zone_detector = EntryZoneDetector()
-        zone = None
-        if m15_df is not None and h1_df is not None and st.session_state.da_zones_today < 3:
-            zone = zone_detector.detect(m15_df, h1_df, bias, price)
-
-        if zone and zone.confidence >= 50:
-            st.session_state.da_last_zone = zone
-            dir_color = "#10b981" if zone.direction == "BUY" else "#ef4444"
-            dir_bg = "signal-buy" if zone.direction == "BUY" else "signal-sell"
-
-            st.markdown(f"""<div class="signal-card {dir_bg}">
-                <span style="font-size:20px; font-weight:700; color:white;">{zone.direction} ZONE</span><br>
-                <span style="font-size:14px; color:#d1d5db;">Entry: <b>${zone.entry_low:.2f} – ${zone.entry_high:.2f}</b></span><br>
-                <span style="color:#9ca3af;">SL: ${zone.sl:.2f}</span><br>
-                <span style="color:#9ca3af;">TP1: ${zone.tp1:.2f} | TP2: ${zone.tp2:.2f} | TP3: ${zone.tp3:.2f}</span><br>
-                <span style="color:#9ca3af;">R:R: 1:{zone.rr_ratio}</span><br>
-                <span style="color:#00d4ff; font-weight:600;">Confidence: {zone.confidence}%</span><br>
-                <span style="color:#6b7280; font-size:12px;">{zone.reason}</span><br>
-                <span style="color:#6b7280; font-size:12px;">Valid until: {zone.valid_until}</span>
-            </div>""", unsafe_allow_html=True)
-
-            # Check proximity to zone for alert
-            in_zone = zone.entry_low <= price <= zone.entry_high
-            near_zone = (zone.entry_low - 1.0 <= price <= zone.entry_high + 1.0) and not in_zone
-
-            if in_zone:
-                st.warning(f"\U0001f3af **PRICE IN ENTRY ZONE** — Watch for confirmation candle")
-                # NOTE: Telegram alerts sent by Railway decision_monitor.py (not here)
-            elif near_zone:
-                st.info(f"\u23f3 Price approaching zone (${abs(price - zone.entry_low):.1f} away)")
-                # NOTE: Telegram alerts sent by Railway decision_monitor.py (not here)
-        else:
-            if st.session_state.da_last_zone:
-                z = st.session_state.da_last_zone
-                st.markdown(f"""<div style="background:#1f2937; border:1px solid #374151; border-radius:10px; padding:16px;">
-                    <span style="color:#6b7280;">Last zone: {z.direction} ${z.entry_low:.2f}–${z.entry_high:.2f}</span><br>
-                    <span style="color:#4b5563; font-size:12px;">Waiting for new setup...</span>
-                </div>""", unsafe_allow_html=True)
-            else:
-                st.markdown("""<div style="background:#1f2937; border:1px solid #374151; border-radius:10px; padding:16px;">
-                    <span style="color:#6b7280;">No active zone</span><br>
-                    <span style="color:#4b5563; font-size:12px;">Scanning for liquidity sweep + pullback...</span>
-                </div>""", unsafe_allow_html=True)
-
-    st.divider()
-
-    # ── D. TRADE MANAGER ──
-    st.markdown("### Trade Manager")
-    st.caption("Enter your trade manually after you execute it. The system will track and suggest management actions.")
-
-    trade_col1, trade_col2 = st.columns([1, 2])
-
-    with trade_col1:
-        with st.form("trade_entry_form"):
-            direction = st.selectbox("Direction", ["BUY", "SELL"])
-            entry_price = st.number_input("Entry Price", value=float(f"{price:.2f}"), step=0.1, format="%.2f")
-
-            # Auto-fill from zone if available
-            z = st.session_state.da_last_zone
-            if z and z.direction == direction:
-                default_sl = z.sl
-                default_tp1 = z.tp1
-                default_tp2 = z.tp2
-                default_tp3 = z.tp3
-            else:
-                atr = bias.atr if bias.atr > 0 else 5.0
-                if direction == "BUY":
-                    default_sl = entry_price - atr * 1.5
-                    default_tp1 = entry_price + atr * 2.0
-                    default_tp2 = entry_price + atr * 3.5
-                    default_tp3 = entry_price + atr * 5.0
-                else:
-                    default_sl = entry_price + atr * 1.5
-                    default_tp1 = entry_price - atr * 2.0
-                    default_tp2 = entry_price - atr * 3.5
-                    default_tp3 = entry_price - atr * 5.0
-
-            sl = st.number_input("Stop Loss", value=float(f"{default_sl:.2f}"), step=0.1, format="%.2f")
-            tp1 = st.number_input("TP1", value=float(f"{default_tp1:.2f}"), step=0.1, format="%.2f")
-            tp2 = st.number_input("TP2", value=float(f"{default_tp2:.2f}"), step=0.1, format="%.2f")
-            tp3 = st.number_input("TP3", value=float(f"{default_tp3:.2f}"), step=0.1, format="%.2f")
-
-            submitted = st.form_submit_button("Register Trade", type="primary", use_container_width=True)
-            if submitted:
-                st.session_state.da_active_trade = {
-                    "direction": direction,
-                    "entry_price": entry_price,
-                    "sl": sl,
-                    "original_sl": sl,
-                    "tp1": tp1,
-                    "tp2": tp2,
-                    "tp3": tp3,
-                    "tp1_hit": False,
-                    "tp2_hit": False,
-                    "sl_at_be": False,
-                    "opened_at": now_utc.strftime("%H:%M UTC"),
-                }
-                st.session_state.da_zones_today += 1
-                st.success(f"Trade registered: {direction} @ ${entry_price:.2f}")
-
-        if st.session_state.da_active_trade:
-            if st.button("Close Trade", use_container_width=True):
-                st.session_state.da_active_trade = None
-                st.rerun()
-
-    with trade_col2:
-        trade = st.session_state.da_active_trade
-        if trade:
-            entry = trade["entry_price"]
-            if trade["direction"] == "BUY":
-                pips = (price - entry) / SYMBOL_PIP
-                pnl_color = "#10b981" if pips > 0 else "#ef4444"
-            else:
-                pips = (entry - price) / SYMBOL_PIP
-                pnl_color = "#10b981" if pips > 0 else "#ef4444"
-
-            st.markdown(f"""<div class="metric-card" style="text-align:left; padding:20px;">
-                <div style="font-size:18px; font-weight:700; color:white;">{trade['direction']} Trade Active</div>
-                <div style="color:#9ca3af; margin-top:8px;">Entry: ${entry:.2f} | Current: ${price:.2f}</div>
-                <div style="color:{pnl_color}; font-size:28px; font-weight:700; font-family:'Space Mono',monospace; margin:10px 0;">
-                    {pips:+.1f} pips
-                </div>
-                <div style="color:#9ca3af;">SL: ${trade['sl']:.2f} {'(at BE)' if trade['sl_at_be'] else ''}</div>
-                <div style="color:#9ca3af;">TP1: ${trade['tp1']:.2f} {'✓' if trade['tp1_hit'] else ''} | TP2: ${trade['tp2']:.2f} {'✓' if trade['tp2_hit'] else ''} | TP3: ${trade['tp3']:.2f}</div>
-            </div>""", unsafe_allow_html=True)
-
-            # ── LIVE TRADE SUGGESTIONS ──
-            suggestions = []
-
-            # TP1 hit check
-            if not trade["tp1_hit"]:
-                if (trade["direction"] == "BUY" and price >= trade["tp1"]) or \
-                   (trade["direction"] == "SELL" and price <= trade["tp1"]):
-                    trade["tp1_hit"] = True
-                    trade["sl_at_be"] = True
-                    if trade["direction"] == "BUY":
-                        trade["sl"] = entry + 1 * SYMBOL_PIP
-                    else:
-                        trade["sl"] = entry - 1 * SYMBOL_PIP
-                    suggestions.append(("success", "\U0001f3af **TP1 Hit!** Close 50% — SL moved to breakeven"))
-                    # Telegram alerts handled by Railway decision_monitor.py
-
-            # TP2 hit check
-            if trade["tp1_hit"] and not trade["tp2_hit"]:
-                if (trade["direction"] == "BUY" and price >= trade["tp2"]) or \
-                   (trade["direction"] == "SELL" and price <= trade["tp2"]):
-                    trade["tp2_hit"] = True
-                    trade["sl"] = trade["tp1"]
-                    suggestions.append(("success", "\U0001f3af **TP2 Hit!** Close 30% more — SL trailed to TP1"))
-                    # Telegram alerts handled by Railway decision_monitor.py
-
-            # TP3 check
-            if trade["tp2_hit"]:
-                if (trade["direction"] == "BUY" and price >= trade["tp3"]) or \
-                   (trade["direction"] == "SELL" and price <= trade["tp3"]):
-                    suggestions.append(("success", "\U0001f389 **TP3 Hit!** Full target achieved — Close remaining position"))
-
-            # Structure change warning
-            if trade["direction"] == "BUY" and bias.bias == "BEARISH":
-                suggestions.append(("warning", f"\u26a0\ufe0f **Bearish CHoCH** — H1 structure now {bias.h1_structure}. Consider {'closing remaining' if trade['tp1_hit'] else 'reducing position'}"))
-            elif trade["direction"] == "SELL" and bias.bias == "BULLISH":
-                suggestions.append(("warning", f"\u26a0\ufe0f **Bullish CHoCH** — H1 structure now {bias.h1_structure}. Consider {'closing remaining' if trade['tp1_hit'] else 'reducing position'}"))
-
-            # Running in profit suggestion
-            if pips > 0 and not suggestions:
-                if trade["direction"] == "BUY":
-                    next_target = trade["tp1"] if not trade["tp1_hit"] else (trade["tp2"] if not trade["tp2_hit"] else trade["tp3"])
-                    pips_to_target = (next_target - price) / SYMBOL_PIP
-                else:
-                    next_target = trade["tp1"] if not trade["tp1_hit"] else (trade["tp2"] if not trade["tp2_hit"] else trade["tp3"])
-                    pips_to_target = (price - next_target) / SYMBOL_PIP
-                suggestions.append(("info", f"\U0001f4ca Running +{pips:.0f} pips — {pips_to_target:.0f} pips to next target. **Hold.**"))
-
-            elif pips < -20 and not suggestions:
-                suggestions.append(("warning", f"\U0001f4c9 Trade in drawdown ({pips:.0f} pips). SL will protect at ${trade['sl']:.2f}."))
-
-            for level, msg in suggestions:
-                if level == "success":
-                    st.success(msg)
-                elif level == "warning":
-                    st.warning(msg)
-                else:
-                    st.info(msg)
-
-        else:
-            st.markdown("""<div style="background:#1f2937; border:1px solid #374151; border-radius:10px; padding:30px; text-align:center;">
-                <span style="color:#6b7280; font-size:16px;">No active trade</span><br>
-                <span style="color:#4b5563; font-size:13px;">Use the form to register your trade after manual execution</span>
-            </div>""", unsafe_allow_html=True)
-
-    # ── NOTIFICATION STATUS ──
-    st.divider()
-    notif_col1, notif_col2 = st.columns(2)
-    with notif_col1:
-        st.markdown("**Notification Rules**")
-        st.markdown("""
-        - Price approaching entry zone ($1 away)
-        - Entry zone hit
-        - TP1/TP2/TP3 hit with management action
-        - Structure change (CHoCH) against trade
-        - NO spam during Asian session
-        """)
-    with notif_col2:
-        st.markdown("**Active Filters**")
-        st.markdown(f"""
-        - Direction: **{bias.bias} only** (structure filter)
-        - Session: **{'Active' if session_name in ('LONDON', 'NEW YORK', 'LN OVERLAP') else 'Inactive — ' + session_name}**
-        - Sweep required before entry zone
-        - Max 3 setups per day
-        """)
-
-
-# ═════════════════════════════════════════════════════════════
-# PAGE: MULTI-SYMBOL SIGNALS
-# ═════════════════════════════════════════════════════════════
-def page_multi_signal():
-    st.markdown("""<div class="gold-header">
-        <h1>\U0001f310 Signal Hub</h1>
-        <div class="subtitle">All 10 Symbols × V6 Callisto Engine × Grok AI | A+ Only | One-Screen Trading</div>
-    </div>""", unsafe_allow_html=True)
-
-    if st_autorefresh:
-        st_autorefresh(interval=30000, limit=None, key="multi_refresh")
-
-    grok = st.session_state.grok
-    unified = st.session_state.unified_engine
-
-    # Symbol selector
-    col_filter, col_grok = st.columns([3, 1])
-    with col_filter:
-        categories = st.multiselect("Filter by category",
-            ["commodity", "forex", "crypto"],
-            default=["commodity", "forex", "crypto"])
-    with col_grok:
-        use_unified = st.checkbox("Unified AI Brain", value=grok.is_available,
-                               disabled=not grok.is_available)
-        if not grok.is_available:
-            st.caption("Add GROK_API_KEY to enable")
-        elif use_unified:
-            st.caption("\U0001f9e0 Callisto + Grok combined")
-
-    filtered_symbols = {k: v for k, v in SYMBOLS.items()
-                        if v["category"] in categories}
-
-    # Scan all symbols
-    results = {}
-    progress = st.progress(0)
-    status_text = st.empty()
-
-    for i, (sym, cfg) in enumerate(filtered_symbols.items()):
-        status_text.text(f"Scanning {sym}...")
-        progress.progress((i + 1) / len(filtered_symbols))
-
-        try:
-            td_code = cfg["td_code"]
-            df_m15 = fetch_bars(td_code, "15min", 200, TWELVE_DATA_API_KEY)
-            df_h1 = fetch_bars(td_code, "1h", 200, TWELVE_DATA_API_KEY)
-            df_h4 = fetch_bars(td_code, "4h", 200, TWELVE_DATA_API_KEY)
-
-            if df_m15 is not None:
-                df_m15 = add_indicators(df_m15)
-            if df_h1 is not None:
-                df_h1 = add_indicators(df_h1)
-            if df_h4 is not None:
-                df_h4 = add_indicators(df_h4)
-
-            if df_m15 is None:
-                results[sym] = {"error": "No data"}
-                continue
-
-            price = float(df_m15["close"].iloc[-1])
-            rsi = float(df_m15["rsi14"].iloc[-1]) if "rsi14" in df_m15.columns else 50
-            atr = float(df_m15["atr14"].iloc[-1]) if "atr14" in df_m15.columns else 0
-
-            # Run gold engine for both directions (works for all symbols)
-            buy_r = gold_engine_score(df_m15, df_h1, df_h4, "BUY")
-            sell_r = gold_engine_score(df_m15, df_h1, df_h4, "SELL")
-
-            best = buy_r if (buy_r and buy_r["score"] >= (sell_r["score"] if sell_r else 0)) else sell_r
-
-            # ── UNIFIED ENGINE: Combine Callisto + Grok for A+ signals ──
-            unified_signal = None
-            if use_unified and best and best.get("grade") == "A+":
-                status_text.text(f"\U0001f9e0 AI analyzing {sym}...")
-                unified_signal = unified.generate_signal(
-                    sym, cfg, best, df_m15, df_h1, df_h4
-                )
-
-            results[sym] = {
-                "price": price, "rsi": rsi, "atr": atr,
-                "buy_grade": buy_r["grade"] if buy_r else "N/A",
-                "buy_score": buy_r["score"] if buy_r else 0,
-                "sell_grade": sell_r["grade"] if sell_r else "N/A",
-                "sell_score": sell_r["score"] if sell_r else 0,
-                "best_dir": best["direction"] if best else "N/A",
-                "best_grade": best["grade"] if best else "N/A",
-                "best_score": best["score"] if best else 0,
-                "cfg": cfg,
-                "unified": unified_signal,
-            }
-
-        except Exception as e:
-            results[sym] = {"error": str(e)[:100]}
-
-    progress.empty()
-    status_text.empty()
-
-    # ── MT5 OPEN TRADE MONITOR (Liquidity Sweep Protection) ──
-    open_trades = get_metaapi_open_trades()
-    if open_trades:
-        with st.expander(f"\U0001f6e1\ufe0f MT5 Live Trades — {len(open_trades)} open positions", expanded=False):
-            for sym_check in filtered_symbols:
-                sym_cfg = filtered_symbols[sym_check]
-                sym_price = results.get(sym_check, {}).get("price", 0)
-                if sym_price > 0:
-                    risk_info = analyze_trade_liquidity_risk(
-                        open_trades, sym_cfg.get("mt5_code", sym_check), sym_price, sym_cfg.get("pip", 0.0001)
-                    )
-                    if risk_info.get("total_trades", 0) > 0:
-                        rl = risk_info["risk_level"]
-                        rl_color = "#ef4444" if rl == "HIGH" else "#F5A623" if rl == "MEDIUM" else "#10b981"
-                        rl_icon = "\U0001f534" if rl == "HIGH" else "\U0001f7e1" if rl == "MEDIUM" else "\U0001f7e2"
-
-                        st.markdown(f"""<div style="background:#0d1117; border-left:4px solid {rl_color};
-                            padding:10px; margin:4px 0; border-radius:4px;">
-                            <div style="color:{rl_color}; font-weight:700; font-size:13px;">
-                                {rl_icon} {sym_check}: {risk_info['total_trades']} trades |
-                                Vol: {risk_info['total_volume']:.2f} |
-                                PnL: ${risk_info['total_profit']:.2f} |
-                                Sweep Risk: <b>{rl}</b>
-                            </div>
-                            <div style="color:#d1d5db; font-size:11px; margin-top:4px;">
-                                {risk_info['recommendation']}
-                            </div>
-                            <div style="color:#6b7280; font-size:10px; margin-top:2px;">
-                                SL cluster: ${risk_info.get('sl_cluster', 0):.2f} |
-                                Nearest liquidity: ${risk_info.get('nearest_liquidity', 0):.2f} |
-                                Distance: {risk_info.get('dist_to_sl_pips', 0):.0f} pips
-                            </div>
-                        </div>""", unsafe_allow_html=True)
-    elif open_trades is not None:
-        st.info("\U0001f6e1\ufe0f No open MT5 positions detected.")
-
-    # Display results as cards
-    for sym, data in sorted(results.items(),
-                             key=lambda x: x[1].get("best_score", 0), reverse=True):
-        if "error" in data:
-            continue
-
-        cfg = data["cfg"]
-        grade = data["best_grade"]
-        score = data["best_score"]
-        direction = data["best_dir"]
-        us = data.get("unified")  # UnifiedSignal or None
-
-        # If unified engine ran, use its grade/direction/confidence
-        if us and us.is_valid:
-            grade = us.grade
-            direction = us.direction
-            score = us.confidence
-
-        # Color based on grade
-        if grade == "A+":
-            border_color = "#FFD700"
-            grade_bg = "#2d2b00"
-        elif grade == "A":
-            border_color = "#10b981"
-            grade_bg = "#0d2818"
-        elif grade == "B":
-            border_color = "#3b82f6"
-            grade_bg = "#0d1b33"
-        else:
-            border_color = "#4b5563"
-            grade_bg = "#1a1a2e"
-
-        dir_color = "#10b981" if direction == "BUY" else "#ef4444" if direction == "SELL" else "#6b7280"
-        dir_icon = "\U0001f7e2" if direction == "BUY" else "\U0001f534" if direction == "SELL" else "\u26aa"
-
-        # ── UNIFIED AI BRAIN SECTION (replaces separate Grok + Order sections) ──
-        unified_html = ""
-        order_html = ""
-        if us and us.is_valid:
-            # AI agreement status
-            agree_color = "#10b981" if us.callisto_agreement == "AGREE" else "#F5A623" if us.callisto_agreement == "PARTIAL" else "#ef4444"
-            agree_label = {"AGREE": "\u2705 ALIGNED", "OVERRIDE": "\u26a0\ufe0f AI OVERRIDE", "PARTIAL": "\U0001f7e1 PARTIAL"}.get(us.callisto_agreement, "\U0001f9e0 UNIFIED")
-
-            # Strategies confirming/warning
-            strats_confirm = ", ".join(us.strategies_confirming[:5]) if us.strategies_confirming else "N/A"
-            strats_warn = ", ".join(us.strategies_warning[:3]) if us.strategies_warning else "None"
-
-            # Callisto module reasons
-            callisto_reasons_str = " | ".join(us.callisto_reasons[:6]) if us.callisto_reasons else "Multi-factor"
-
-            unified_html = f"""
-            <div style="margin-top:10px; padding:12px; background:#0d1117; border-radius:8px; border:2px solid {agree_color};">
-                <div style="color:{agree_color}; font-size:13px; font-weight:700;">
-                    \U0001f9e0 UNIFIED AI BRAIN: {agree_label} — Confidence {us.confidence}%
-                </div>
-                <div style="color:#FFD700; font-size:11px; margin-top:8px; font-weight:600;">WHY THIS TRADE:</div>
-                <div style="color:#e5e7eb; font-size:11px; line-height:1.5;">{us.why_trade}</div>
-                <div style="color:#9ca3af; font-size:10px; margin-top:6px;">
-                    <b>Callisto:</b> {callisto_reasons_str}
-                </div>
-                <div style="color:#10b981; font-size:10px; margin-top:2px;">
-                    <b>Confirming:</b> {strats_confirm}
-                </div>
-                <div style="color:#ef4444; font-size:10px;">
-                    <b>Warnings:</b> {strats_warn}
-                </div>
-                <div style="color:#6b7280; font-size:10px; margin-top:4px;">
-                    <b>Invalidation:</b> {us.why_not_trade[:150]}
-                </div>
-            </div>"""
-
-            # AI-optimized order setup (uses Grok's structural levels, not arbitrary pips)
-            tp_rows = ""
-            for tp in us.tp_levels[:5]:
-                tp_rows += f"TP{tp['level']}: ${tp['price']:.{cfg['decimals']}f} ({tp['pips']:.0f}p) "
-
-            order_html = f"""
-            <div style="margin-top:8px; padding:10px; background:#1a1500; border-radius:8px; border:1px solid #FFD700;">
-                <div style="color:#FFD700; font-size:12px; font-weight:700;">\u2b50 AI-OPTIMIZED ORDER SETUP</div>
-                <div style="color:#e5e7eb; font-size:11px; margin-top:6px;">
-                    Entry: <b>${us.entry_price:.{cfg['decimals']}f}</b> ({us.entry_type}) — {us.entry_reason[:80]}<br>
-                    SL: <b>${us.sl_price:.{cfg['decimals']}f}</b> ({us.sl_pips:.0f}p) — {us.sl_reason[:80]}<br>
-                    {tp_rows}<br>
-                    R:R = <b>{us.risk_reward:.1f}</b> | {us.num_orders}x {us.lot_size} lot | Risk: <b>${us.max_risk_usd:.2f}</b>
-                </div>
-            </div>"""
-
-        elif grade == "A+":
-            # Fallback: Callisto-only A+ (no unified engine)
-            sl_pips_v = cfg["sl_pips"]
-            tp_pips_v = cfg["tp_pips"]
-            lot = cfg["lot_size"]
-            pip_val = lot * cfg["pip_value"]
-            order_html = f"""
-            <div style="margin-top:10px; padding:10px; background:#1a1500; border-radius:8px; border:1px solid #FFD700;">
-                <div style="color:#FFD700; font-size:12px; font-weight:700;">\u2b50 LAYERED ORDER SETUP (Callisto Only)</div>
-                <div style="color:#e5e7eb; font-size:11px; margin-top:6px;">
-                    {cfg['num_orders']}x {lot} lot | SL: {sl_pips_v} pips |
-                    TPs: {'/'.join(str(t) for t in tp_pips_v)} pips |
-                    Risk: ${pip_val * sl_pips_v * cfg['num_orders']:.2f}
-                </div>
-            </div>"""
-
-        st.markdown(f"""<div style="background:{grade_bg}; border:1px solid {border_color}; border-radius:12px;
-            padding:16px; margin:8px 0;">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-                <div>
-                    <span style="color:#FFD700; font-size:18px; font-weight:700;">{sym}</span>
-                    <span style="color:#6b7280; font-size:13px;"> {cfg.get('name', sym)}</span>
-                    <span style="color:#4b5563; font-size:11px; margin-left:8px;">{cfg['category'].upper()}</span>
-                </div>
-                <div style="text-align:right;">
-                    <span style="color:white; font-size:16px; font-family:'Space Mono',monospace;">${data['price']:.{cfg['decimals']}f}</span>
-                </div>
-            </div>
-            <div style="display:flex; justify-content:space-between; margin-top:10px;">
-                <div>
-                    {dir_icon} <span style="color:{dir_color}; font-weight:700; font-size:15px;">{direction}</span>
-                    <span style="color:white; font-size:13px; margin-left:8px;">Grade: <b>{grade}</b> ({score}/100)</span>
-                </div>
-                <div style="color:#9ca3af; font-size:12px;">
-                    RSI: {data['rsi']:.1f} | BUY: {data['buy_grade']} ({data['buy_score']}) | SELL: {data['sell_grade']} ({data['sell_score']})
-                </div>
-            </div>
-            {unified_html}
-            {order_html}
-        </div>""", unsafe_allow_html=True)
-
-        # ── AUTO + MANUAL Telegram for A+ signals ──
-        if grade == "A+":
-            notifier = st.session_state.get("notifier")
-            if notifier and notifier.bot_token:
-                # Build Telegram signal data
-                if us and us.is_valid:
-                    tg_signal = {
-                        "symbol": sym,
-                        "direction": us.direction,
-                        "grade": us.grade,
-                        "score": us.confidence,
-                        "confidence": "HIGH",
-                        "mode": "SCALP",
-                        "entry_price": us.entry_price,
-                        "sl": us.sl_price,
-                        "tp_levels": [tp["price"] for tp in us.tp_levels],
-                        "risk_pips": us.sl_pips,
-                        "num_orders": us.num_orders,
-                        "lot_size": us.lot_size,
-                        "pip_value": us.lot_size * cfg.get("pip_value", 10),
-                        "modules": us.callisto_modules,
-                        "confirmations": len(us.strategies_confirming),
-                        "contradictions": len(us.strategies_warning),
-                    }
-                    grok_tg = {
-                        "confirmed": us.grok_agrees or us.callisto_agreement in ("AGREE", "PARTIAL"),
-                        "agreement": us.callisto_agreement,
-                        "confidence": us.confidence,
-                        "reasoning": us.why_trade,
-                    }
-                else:
-                    pip_v = cfg["pip"]
-                    entry_p = data["price"]
-                    if direction == "BUY":
-                        sl_p = entry_p - cfg["sl_pips"] * pip_v
-                        tp_list = [round(entry_p + tp * pip_v, cfg["decimals"]) for tp in cfg["tp_pips"]]
-                    else:
-                        sl_p = entry_p + cfg["sl_pips"] * pip_v
-                        tp_list = [round(entry_p - tp * pip_v, cfg["decimals"]) for tp in cfg["tp_pips"]]
-                    tg_signal = {
-                        "symbol": sym, "direction": direction, "grade": grade, "score": score,
-                        "confidence": "HIGH", "mode": "SCALP", "entry_price": entry_p,
-                        "sl": round(sl_p, cfg["decimals"]), "tp_levels": tp_list,
-                        "risk_pips": cfg["sl_pips"], "num_orders": cfg["num_orders"],
-                        "lot_size": cfg["lot_size"], "pip_value": cfg["lot_size"] * cfg["pip_value"],
-                        "modules": {}, "confirmations": score // 10, "contradictions": 0,
-                    }
-                    grok_tg = None
-
-                # ── AUTO-SEND: Send automatically if not sent in last 15 minutes ──
-                import time as _time
-                sig_key = f"{sym}_{direction}_{score}"
-                sent_signals = st.session_state.get("tg_sent_signals", {})
-                last_sent = sent_signals.get(sig_key, 0)
-                auto_cooldown = 900  # 15 minutes
-
-                if _time.time() - last_sent > auto_cooldown:
-                    ok = notifier.send_signal_v2(tg_signal, grok_verdict=grok_tg)
-                    if ok:
-                        sent_signals[sig_key] = _time.time()
-                        st.session_state.tg_sent_signals = sent_signals
-                        st.success(f"\u2705 {sym} A+ signal auto-sent to Telegram!")
-                    else:
-                        st.warning(f"Auto-send failed for {sym}. Check bot token.")
-                else:
-                    mins_ago = int((_time.time() - last_sent) / 60)
-                    st.caption(f"\U0001f4e8 {sym} signal already sent {mins_ago}m ago (cooldown: 15m)")
-
-                # Manual re-send button
-                btn_key = f"tg_resend_{sym}_{score}"
-                if st.button(f"\U0001f504 Resend {sym} to Telegram", key=btn_key):
-                    ok = notifier.send_signal_v2(tg_signal, grok_verdict=grok_tg)
-                    if ok:
-                        sent_signals[sig_key] = _time.time()
-                        st.session_state.tg_sent_signals = sent_signals
-                        st.success(f"\u2705 {sym} signal resent!")
-                    else:
-                        st.error("Failed to send. Check bot token.")
-
-
-# ═════════════════════════════════════════════════════════════
-# PAGE: GROK AI ANALYST
-# ═════════════════════════════════════════════════════════════
-def page_grok_ai():
-    st.markdown("""<div class="gold-header">
-        <h1>\U0001f9e0 Grok AI Chat</h1>
-        <div class="subtitle">Powered by xAI | Deep Market Analysis & Live Trading Q&A</div>
-    </div>""", unsafe_allow_html=True)
-
-    grok = st.session_state.grok
-
-    if not grok.is_available:
-        st.error("Grok API key not configured. Add GROK_API_KEY to your .env or Streamlit secrets.")
-        st.code("GROK_API_KEY=xai-your-key-here")
-        return
-
-    st.success(f"Grok AI connected | Model: {grok.analysis_model}")
-    st.caption("\U0001f4a1 Signal confirmation is built into the Dashboard & Signal Hub — no need to switch pages!")
-
-    tab1, tab3 = st.tabs(["\U0001f4ca Deep Analysis", "\U0001f4ac Trading Chat"])
-
-    # ── TAB 1: MARKET ANALYSIS ──
-    with tab1:
-        st.markdown("### Ask Grok to analyze any symbol")
-
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            sym = st.selectbox("Select Symbol", list(SYMBOLS.keys()),
-                               index=list(SYMBOLS.keys()).index(st.session_state.active_symbol))
-        with col2:
-            st.markdown("<br>", unsafe_allow_html=True)
-            analyze_btn = st.button("\U0001f50d Analyze Now", type="primary", use_container_width=True)
-
-        if analyze_btn:
-            cfg = SYMBOLS[sym]
-            with st.spinner(f"Grok is analyzing {sym}..."):
-                df_m15 = fetch_bars(cfg["td_code"], "15min", 200, TWELVE_DATA_API_KEY)
-                df_h1 = fetch_bars(cfg["td_code"], "1h", 200, TWELVE_DATA_API_KEY)
-                df_h4 = fetch_bars(cfg["td_code"], "4h", 200, TWELVE_DATA_API_KEY)
-
-                if df_m15 is not None:
-                    df_m15 = add_indicators(df_m15)
-                if df_h1 is not None:
-                    df_h1 = add_indicators(df_h1)
-                if df_h4 is not None:
-                    df_h4 = add_indicators(df_h4)
-
-                result = grok.analyze_market(sym, cfg, df_m15, df_h1, df_h4)
-
-            if result:
-                bias = result.get("bias", "NO_TRADE")
-                conf = result.get("confidence", 0)
-                grade = result.get("grade", "N/A")
-                reasoning = result.get("reasoning", "")
-
-                bias_color = "#10b981" if bias == "BUY" else "#ef4444" if bias == "SELL" else "#6b7280"
-                bias_icon = "\U0001f7e2" if bias == "BUY" else "\U0001f534" if bias == "SELL" else "\u26aa"
-
-                st.markdown(f"""<div style="background:#0d1117; border:2px solid {bias_color};
-                    border-radius:12px; padding:20px; margin:16px 0;">
-                    <div style="font-size:24px; font-weight:700; color:{bias_color};">
-                        {bias_icon} GROK: {bias} {sym}
-                    </div>
-                    <div style="color:white; margin-top:8px;">
-                        Confidence: <b>{conf}%</b> | Grade: <b>{grade}</b>
-                    </div>
-                    <div style="color:#d1d5db; margin-top:12px; line-height:1.6;">
-                        {reasoning}
-                    </div>
-                </div>""", unsafe_allow_html=True)
-
-                # Entry details
-                entry = result.get("entry", {})
-                if entry and entry.get("price"):
-                    st.markdown(f"""<div style="background:#111827; border-radius:8px; padding:16px; margin:8px 0;">
-                        <div style="color:#FFD700; font-weight:700;">Grok's Calculated Entry:</div>
-                        <div style="color:#e5e7eb; margin-top:8px;">
-                            Entry: <b>${entry.get('price', 0):.5f}</b> |
-                            SL: <b>${entry.get('sl', 0):.5f}</b> |
-                            TP1: <b>${entry.get('tp1', 0):.5f}</b> |
-                            TP2: <b>${entry.get('tp2', 0):.5f}</b> |
-                            TP3: <b>${entry.get('tp3', 0):.5f}</b>
-                        </div>
-                        <div style="color:#9ca3af; margin-top:8px; font-size:12px;">
-                            Reason: {entry.get('reason', '')}
-                        </div>
-                    </div>""", unsafe_allow_html=True)
-
-                # Risk warning
-                risk_warning = result.get("risk_warning", "")
-                if risk_warning:
-                    st.warning(f"\u26a0\ufe0f {risk_warning}")
-
-                # Analysis details
-                analysis = result.get("analysis", {})
-                if analysis:
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("Trend", analysis.get("trend", "N/A"))
-                    with col2:
-                        st.metric("Momentum", analysis.get("momentum", "N/A"))
-                    with col3:
-                        st.metric("Volatility", analysis.get("volatility", "N/A"))
-                    with col4:
-                        levels = analysis.get("key_levels", {})
-                        st.metric("Support", f"${levels.get('support', 0):.2f}")
-            else:
-                st.error("Grok analysis failed. Check API key and try again.")
-
-    # ── TAB 2: TRADING CHAT ──
-    with tab3:
-        st.markdown("### Chat with Grok about trading")
-
-        # Build context
-        context_parts = [f"Platform: Alpha FX Hub v{VERSION}"]
-        try:
-            overview = st.session_state.scanner.get_market_overview()
-            context_parts.append(f"Gold: ${overview.get('price', 0):.2f} | Bias: {overview.get('bias', 'N/A')}")
-            context_parts.append(f"RSI: {overview.get('rsi', 50):.1f} | ATR: {overview.get('atr', 0):.2f}")
-        except Exception:
-            pass
-        context = "\n".join(context_parts)
-
-        # Display chat history
-        for msg in st.session_state.grok_chat_history:
-            role = msg["role"]
-            with st.chat_message("user" if role == "user" else "assistant",
-                                  avatar="\U0001f468\u200d\U0001f4bb" if role == "user" else "\U0001f9e0"):
-                st.markdown(msg["content"])
-
-        # Chat input
-        user_msg = st.chat_input("Ask Grok anything about trading...")
-        if user_msg:
-            st.session_state.grok_chat_history.append({"role": "user", "content": user_msg})
-
-            with st.chat_message("user", avatar="\U0001f468\u200d\U0001f4bb"):
-                st.markdown(user_msg)
-
-            with st.chat_message("assistant", avatar="\U0001f9e0"):
-                with st.spinner("Grok thinking..."):
-                    response = grok.chat(user_msg, context=context)
-                if response:
-                    st.markdown(response)
-                    st.session_state.grok_chat_history.append({"role": "assistant", "content": response})
-                else:
-                    st.error("Grok failed to respond. Try again.")
-
-        if st.button("Clear Chat History"):
-            st.session_state.grok_chat_history = []
-            st.rerun()
-
-
-# ═════════════════════════════════════════════════════════════
-# PAGE ROUTER
-# ═════════════════════════════════════════════════════════════
-PAGE_MAP = {
-    "home": page_home,
-    "dashboard": page_dashboard,
-    "assistant": page_decision_assistant,
-    "academy": page_academy,
-    "manual": page_manual,
-    "calendar": page_calendar,
-    "risk_calc": page_risk_calc,
-    "tracker": page_tracker,
-    "scoreboard": page_scoreboard,
-    "regime": page_regime,
-    "backtest": page_backtest,
-    "ai_insights": page_ai_insights,
-    "multi_signal": page_multi_signal,
-    "grok_ai": page_grok_ai,
-}
-
-# Route to current page
-current_page = st.session_state.get("page", "home")
-page_fn = PAGE_MAP.get(current_page, page_home)
-page_fn()
-
-# Footer
-st.markdown("""
-<div style="text-align:center; padding:20px 0; color:#4b5563; font-size:11px; border-top:1px solid #1f2937; margin-top:40px;">
-    \u25c8 Alpha FX Hub v{version} | Multi-Symbol Trading Platform | Powered by Grok xAI<br>
-    <i>Risk Disclaimer: Trading involves substantial risk. Past performance does not guarantee future results.
-    Only trade with capital you can afford to lose.</i>
-</div>
-""".format(version=VERSION), unsafe_allow_html=True)
+interval = INTERVAL_MAP[interval_label]
+
+# ── MAIN ROUTING ──
+if "Live" in mode:
+    render_live(symbol, interval, bars, balance, risk_pct, _notifier)
+elif "Backtest" in mode:
+    render_backtest(get_td_key())
+else:
+    render_journal()

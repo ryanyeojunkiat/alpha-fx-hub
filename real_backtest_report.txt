@@ -1,0 +1,11 @@
+======================================================================
+  ALPHA FX HUB BACKTEST REPORT
+======================================================================
+
+Total Trades:     49
+Win Rate:         16.3%
+Profit Factor:    0.25
+Final Balance:    $3,700.38
+Total Return:     $-6,299.62
+Max Drawdown:     $6,377.09
+Median R:         -1.32R
