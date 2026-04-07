@@ -1242,16 +1242,20 @@ def gold_engine_score(
                       m24["score"] + m25["score"] + m26["score"])
     raw_score = technical_score + institutional_score + callisto_score
 
-    # Normalize to 0-100 range
-    # Max possible: ~220 (140 tech + 27 institutional + ~57 callisto)
-    score = max(0, min(100, int(raw_score * 0.45 + 25)))
-
-    # Count confirmations and contradictions
+    # Count confirmations and contradictions FIRST (needed for score boost)
     all_modules = [m1, m2, m3, m4, m5, m6, m7, m8, m9, m11, m12, m13,
                    m14, m15, m16, m17, m18, m20, m21, m22, m23, m24, m25]
     confirmations = sum(1 for m in all_modules if m["score"] > 0)
     contradictions = sum(1 for m in [m1, m4, m8, m10, m11, m18, m19, m20, m24, m26]
                         if m["score"] < 0)
+
+    # Normalize to 0-100 range (V6.1 recalibrated)
+    # Old formula: raw * 0.45 + 25 — too compressed, max realistic ~65
+    # New formula: raw * 0.55 + 28 — good setup (raw 80) = 72, strong (raw 110) = 88
+    # Confirmation boost: +1 per confirmation above 6 (rewards multi-confluence)
+    score = max(0, min(100, int(raw_score * 0.55 + 28)))
+    if confirmations >= 7:
+        score = min(100, score + (confirmations - 6) * 2)  # +2 per extra confirmation
 
     # Hard caps
     h4_aligned = m1.get("h4_aligned", False)
@@ -1268,25 +1272,33 @@ def gold_engine_score(
         grade = "D"
     elif trc_full and callisto_2of3:
         # Full TRC setup with 2/3 HTF alignment — highest conviction
-        if score >= 68:
+        if score >= 60:
             grade = "A+"
-        elif score >= 58:
+        elif score >= 50:
             grade = "A"
         else:
             grade = "B"
     elif trc_setup and callisto_2of3:
         # TRC step 1+2 but waiting for retest
-        if score >= 72:
+        if score >= 65:
             grade = "A"
-        elif score >= 58:
+        elif score >= 50:
             grade = "B"
         else:
             grade = "C"
-    elif trc_setup and confirmations >= 8:
-        # Strong TRC setup without full 2/3 HTF but many confirmations
-        if score >= 75:
+    elif trc_full:
+        # Full TRC without 2/3 HTF — still strong if score is decent
+        if score >= 65:
             grade = "A+"
-        elif score >= 65:
+        elif score >= 55:
+            grade = "A"
+        else:
+            grade = "B"
+    elif trc_setup and confirmations >= 7:
+        # Strong TRC setup with many confirmations
+        if score >= 68:
+            grade = "A+"
+        elif score >= 58:
             grade = "A"
         else:
             grade = "B"
@@ -1390,13 +1402,13 @@ def _assign_grade(score: int, h4_aligned: bool, overextended: bool,
         if score >= 80:
             return "B"
 
-    if score >= 78 and confirmations >= 8:
+    if score >= 72 and confirmations >= 7:
         return "A+"
-    elif score >= 70 and confirmations >= 6:
+    elif score >= 64 and confirmations >= 5:
         return "A"
-    elif score >= 60:
+    elif score >= 52:
         return "B"
-    elif score >= 45:
+    elif score >= 40:
         return "C"
     return "D"
 
