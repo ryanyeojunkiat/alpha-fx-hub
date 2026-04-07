@@ -91,8 +91,9 @@ class GrokEngine:
         messages = [
             {
                 "role": "system",
-                "content": f"""You are an expert forex and commodity trader specializing in technical analysis.
-You analyze market data and make trading decisions based on ICT concepts, price action, and multi-timeframe analysis.
+                "content": f"""{self._get_brain_prompt(symbol)}
+
+You analyze market data and make trading decisions by synthesizing ALL world-class strategies.
 
 IMPORTANT: You must respond in valid JSON format ONLY. No markdown, no explanation outside JSON.
 
@@ -183,8 +184,10 @@ Give me your analysis and trading decision in JSON format."""
         messages = [
             {
                 "role": "system",
-                "content": """You are a senior trading risk manager reviewing trade signals.
-Your job is to confirm or reject signals based on market conditions.
+                "content": f"""{self._get_brain_prompt(symbol)}
+
+You are now acting as a senior trading risk manager reviewing trade signals.
+Your job is to confirm or reject signals based on ALL world-class strategies.
 
 Respond in valid JSON ONLY:
 {
@@ -249,14 +252,16 @@ Should I take this trade? Confirm or reject with reasoning."""
         messages = [
             {
                 "role": "system",
-                "content": f"""You are Alpha FX Hub's AI trading assistant powered by Grok (xAI).
+                "content": f"""{self._get_brain_prompt()}
+
+You are Alpha FX Hub's AI trading assistant powered by Grok (xAI).
 You help traders with market analysis, strategy questions, and trading education.
 You specialize in XAUUSD (Gold), Major Forex pairs, and Crypto (BTC/ETH).
 
 Current context:
 {context if context else 'No specific market context provided.'}
 
-Be concise, actionable, and data-driven. Use ICT/SMC concepts when relevant.
+Be concise, actionable, and data-driven. Reference specific strategies (ICT, SMC, Wyckoff, etc.) when relevant.
 Never give financial advice — frame as analysis and education."""
             },
             {"role": "user", "content": user_message}
@@ -321,6 +326,17 @@ Sort by confidence (highest first). Only include symbols with confidence >= 50."
             except json.JSONDecodeError:
                 return None
         return None
+
+    # ════════════════════════════════════════════════════════════
+    # STRATEGY BRAIN INTEGRATION
+    # ════════════════════════════════════════════════════════════
+    def _get_brain_prompt(self, symbol: str = "XAUUSD") -> str:
+        """Load the world-class strategy brain prompt for a given symbol."""
+        try:
+            from engine.strategy_brain import get_full_brain_prompt
+            return get_full_brain_prompt(symbol)
+        except ImportError:
+            return "You are an expert forex and commodity trader specializing in technical analysis and ICT concepts."
 
     # ════════════════════════════════════════════════════════════
     # HELPERS

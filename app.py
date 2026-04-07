@@ -51,9 +51,11 @@ TELEGRAM_CHANNEL_ID = TELEGRAM_PRIVATE_CHANNEL_ID
 from engine.indicators import add_indicators, detect_fvg_candles, find_swing_points
 from engine.gold_engine import gold_engine_score, detect_choch_realtime, detect_fvg_entry
 from engine.levels import compute_levels, compute_10tp_levels, compute_lot_tiers, compute_trailing_sl
-from engine.data import fetch_bars, fetch_price, fetch_metaapi_price, get_metaapi_account_info
+from engine.data import (fetch_bars, fetch_price, fetch_metaapi_price, get_metaapi_account_info,
+                         get_metaapi_open_trades, get_metaapi_pending_orders, analyze_trade_liquidity_risk)
 from engine.signal_scanner import SignalScanner, Signal
 from engine.grok_engine import GrokEngine, get_grok_engine
+from engine.unified_engine import UnifiedEngine, UnifiedSignal, get_unified_engine
 from trading.trade_manager import TradeManager, Trade, STRATEGIES
 from trading.risk_manager import RiskManager
 from academy.lessons import ACADEMY_LESSONS, SIGNAL_MANUAL
@@ -240,6 +242,12 @@ def init_state():
         st.session_state.grok_chat_history = []
     if "active_symbol" not in st.session_state:
         st.session_state.active_symbol = "XAUUSD"
+
+    # ── Unified Engine (Callisto + Grok combined brain) ──
+    if "unified_engine" not in st.session_state:
+        st.session_state.unified_engine = get_unified_engine(
+            grok_engine=st.session_state.grok, capital=1200.0
+        )
 
     # ── Notification Manager (for sending signals to channels) ──
     # NOTE: Telegram bot polling runs separately via bot_runner.py on Railway
@@ -2017,6 +2025,7 @@ def page_multi_signal():
         st_autorefresh(interval=30000, limit=None, key="multi_refresh")
 
     grok = st.session_state.grok
+    unified = st.session_state.unified_engine
 
     # Symbol selector
     col_filter, col_grok = st.columns([3, 1])
@@ -2025,10 +2034,12 @@ def page_multi_signal():
             ["commodity", "forex", "crypto"],
             default=["commodity", "forex", "crypto"])
     with col_grok:
-        use_grok = st.checkbox("Grok AI Analysis", value=grok.is_available,
+        use_unified = st.checkbox("Unified AI Brain", value=grok.is_available,
                                disabled=not grok.is_available)
         if not grok.is_available:
             st.caption("Add GROK_API_KEY to enable")
+        elif use_unified:
+            st.caption("\U0001f9e0 Callisto + Grok combined")
 
     filtered_symbols = {k: v for k, v in SYMBOLS.items()
                         if v["category"] in categories}
@@ -2069,20 +2080,13 @@ def page_multi_signal():
 
             best = buy_r if (buy_r and buy_r["score"] >= (sell_r["score"] if sell_r else 0)) else sell_r
 
-            # Grok analysis + confirmation for A+ signals
-            grok_result = None
-            grok_confirm = None
-            if use_grok and grok.is_available and best:
-                grok_result = grok.analyze_market(sym, cfg, df_m15, df_h1, df_h4)
-                # Auto-confirm A+ signals with Grok
-                if best.get("grade") == "A+":
-                    grok_confirm = grok.confirm_signal(sym, cfg, {
-                        "direction": best["direction"],
-                        "grade": "A+",
-                        "score": best["score"],
-                        "entry_price": price,
-                        "confidence": best.get("confidence", "HIGH"),
-                    }, df_m15)
+            # ── UNIFIED ENGINE: Combine Callisto + Grok for A+ signals ──
+            unified_signal = None
+            if use_unified and best and best.get("grade") == "A+":
+                status_text.text(f"\U0001f9e0 AI analyzing {sym}...")
+                unified_signal = unified.generate_signal(
+                    sym, cfg, best, df_m15, df_h1, df_h4
+                )
 
             results[sym] = {
                 "price": price, "rsi": rsi, "atr": atr,
@@ -2094,8 +2098,7 @@ def page_multi_signal():
                 "best_grade": best["grade"] if best else "N/A",
                 "best_score": best["score"] if best else 0,
                 "cfg": cfg,
-                "grok": grok_result,
-                "grok_confirm": grok_confirm,
+                "unified": unified_signal,
             }
 
         except Exception as e:
@@ -2103,6 +2106,42 @@ def page_multi_signal():
 
     progress.empty()
     status_text.empty()
+
+    # ── MT5 OPEN TRADE MONITOR (Liquidity Sweep Protection) ──
+    open_trades = get_metaapi_open_trades()
+    if open_trades:
+        with st.expander(f"\U0001f6e1\ufe0f MT5 Live Trades — {len(open_trades)} open positions", expanded=False):
+            for sym_check in filtered_symbols:
+                sym_cfg = filtered_symbols[sym_check]
+                sym_price = results.get(sym_check, {}).get("price", 0)
+                if sym_price > 0:
+                    risk_info = analyze_trade_liquidity_risk(
+                        open_trades, sym_cfg.get("mt5_code", sym_check), sym_price, sym_cfg.get("pip", 0.0001)
+                    )
+                    if risk_info.get("total_trades", 0) > 0:
+                        rl = risk_info["risk_level"]
+                        rl_color = "#ef4444" if rl == "HIGH" else "#F5A623" if rl == "MEDIUM" else "#10b981"
+                        rl_icon = "\U0001f534" if rl == "HIGH" else "\U0001f7e1" if rl == "MEDIUM" else "\U0001f7e2"
+
+                        st.markdown(f"""<div style="background:#0d1117; border-left:4px solid {rl_color};
+                            padding:10px; margin:4px 0; border-radius:4px;">
+                            <div style="color:{rl_color}; font-weight:700; font-size:13px;">
+                                {rl_icon} {sym_check}: {risk_info['total_trades']} trades |
+                                Vol: {risk_info['total_volume']:.2f} |
+                                PnL: ${risk_info['total_profit']:.2f} |
+                                Sweep Risk: <b>{rl}</b>
+                            </div>
+                            <div style="color:#d1d5db; font-size:11px; margin-top:4px;">
+                                {risk_info['recommendation']}
+                            </div>
+                            <div style="color:#6b7280; font-size:10px; margin-top:2px;">
+                                SL cluster: ${risk_info.get('sl_cluster', 0):.2f} |
+                                Nearest liquidity: ${risk_info.get('nearest_liquidity', 0):.2f} |
+                                Distance: {risk_info.get('dist_to_sl_pips', 0):.0f} pips
+                            </div>
+                        </div>""", unsafe_allow_html=True)
+    elif open_trades is not None:
+        st.info("\U0001f6e1\ufe0f No open MT5 positions detected.")
 
     # Display results as cards
     for sym, data in sorted(results.items(),
@@ -2114,6 +2153,13 @@ def page_multi_signal():
         grade = data["best_grade"]
         score = data["best_score"]
         direction = data["best_dir"]
+        us = data.get("unified")  # UnifiedSignal or None
+
+        # If unified engine ran, use its grade/direction/confidence
+        if us and us.is_valid:
+            grade = us.grade
+            direction = us.direction
+            score = us.confidence
 
         # Color based on grade
         if grade == "A+":
@@ -2132,63 +2178,72 @@ def page_multi_signal():
         dir_color = "#10b981" if direction == "BUY" else "#ef4444" if direction == "SELL" else "#6b7280"
         dir_icon = "\U0001f7e2" if direction == "BUY" else "\U0001f534" if direction == "SELL" else "\u26aa"
 
-        # Grok analysis inline
-        grok_html = ""
-        if data.get("grok"):
-            g = data["grok"]
-            grok_bias = g.get("bias", "N/A")
-            grok_conf = g.get("confidence", 0)
-            grok_grade = g.get("grade", "N/A")
-            grok_reason = g.get("reasoning", "")[:200]
-            grok_color = "#10b981" if grok_bias == "BUY" else "#ef4444" if grok_bias == "SELL" else "#6b7280"
-
-            # Check agreement
-            agrees = grok_bias == direction
-            agree_icon = "\u2705" if agrees else "\u274c"
-            agree_text = "AGREES" if agrees else "DISAGREES"
-
-            grok_html = f"""
-            <div style="margin-top:10px; padding:10px; background:#0d1117; border-radius:8px; border-left:3px solid {grok_color};">
-                <div style="color:#9ca3af; font-size:11px;">\U0001f9e0 GROK AI {agree_icon} {agree_text}</div>
-                <div style="color:{grok_color}; font-weight:700;">{grok_bias} | Confidence: {grok_conf}% | Grade: {grok_grade}</div>
-                <div style="color:#6b7280; font-size:11px; margin-top:4px;">{grok_reason}</div>
-            </div>"""
-
-        # Order setup + Grok confirmation for A+ signals
+        # ── UNIFIED AI BRAIN SECTION (replaces separate Grok + Order sections) ──
+        unified_html = ""
         order_html = ""
-        confirm_html = ""
-        if grade == "A+":
-            sl_pips = cfg["sl_pips"]
-            tp_pips = cfg["tp_pips"]
-            pip = cfg["pip"]
-            lot = cfg["lot_size"]
-            price_val = data["price"]
-            pip_val = lot * cfg["pip_value"]
+        if us and us.is_valid:
+            # AI agreement status
+            agree_color = "#10b981" if us.callisto_agreement == "AGREE" else "#F5A623" if us.callisto_agreement == "PARTIAL" else "#ef4444"
+            agree_label = {"AGREE": "\u2705 ALIGNED", "OVERRIDE": "\u26a0\ufe0f AI OVERRIDE", "PARTIAL": "\U0001f7e1 PARTIAL"}.get(us.callisto_agreement, "\U0001f9e0 UNIFIED")
 
-            order_html = f"""
-            <div style="margin-top:10px; padding:10px; background:#1a1500; border-radius:8px; border:1px solid #FFD700;">
-                <div style="color:#FFD700; font-size:12px; font-weight:700;">\u2b50 LAYERED ORDER SETUP</div>
-                <div style="color:#e5e7eb; font-size:11px; margin-top:6px;">
-                    {cfg['num_orders']}x {lot} lot | SL: {sl_pips} pips |
-                    TPs: {'/'.join(str(t) for t in tp_pips)} pips |
-                    Risk: ${pip_val * sl_pips * cfg['num_orders']:.2f}
+            # Strategies confirming/warning
+            strats_confirm = ", ".join(us.strategies_confirming[:5]) if us.strategies_confirming else "N/A"
+            strats_warn = ", ".join(us.strategies_warning[:3]) if us.strategies_warning else "None"
+
+            # Callisto module reasons
+            callisto_reasons_str = " | ".join(us.callisto_reasons[:6]) if us.callisto_reasons else "Multi-factor"
+
+            unified_html = f"""
+            <div style="margin-top:10px; padding:12px; background:#0d1117; border-radius:8px; border:2px solid {agree_color};">
+                <div style="color:{agree_color}; font-size:13px; font-weight:700;">
+                    \U0001f9e0 UNIFIED AI BRAIN: {agree_label} — Confidence {us.confidence}%
+                </div>
+                <div style="color:#FFD700; font-size:11px; margin-top:8px; font-weight:600;">WHY THIS TRADE:</div>
+                <div style="color:#e5e7eb; font-size:11px; line-height:1.5;">{us.why_trade}</div>
+                <div style="color:#9ca3af; font-size:10px; margin-top:6px;">
+                    <b>Callisto:</b> {callisto_reasons_str}
+                </div>
+                <div style="color:#10b981; font-size:10px; margin-top:2px;">
+                    <b>Confirming:</b> {strats_confirm}
+                </div>
+                <div style="color:#ef4444; font-size:10px;">
+                    <b>Warnings:</b> {strats_warn}
+                </div>
+                <div style="color:#6b7280; font-size:10px; margin-top:4px;">
+                    <b>Invalidation:</b> {us.why_not_trade[:150]}
                 </div>
             </div>"""
 
-            # Grok confirmation verdict
-            gc = data.get("grok_confirm")
-            if gc:
-                gc_confirmed = gc.get("confirmed", False)
-                gc_agreement = gc.get("agreement", "CAUTION")
-                gc_conf = gc.get("confidence", 0)
-                gc_reason = gc.get("reasoning", "")[:250]
-                gc_color = "#10b981" if gc_confirmed else "#ef4444" if gc_agreement == "DISAGREE" else "#F5A623"
-                gc_icon = "\u2705 APPROVED" if gc_confirmed else "\u274c REJECTED" if gc_agreement == "DISAGREE" else "\u26a0\ufe0f CAUTION"
+            # AI-optimized order setup (uses Grok's structural levels, not arbitrary pips)
+            tp_rows = ""
+            for tp in us.tp_levels[:5]:
+                tp_rows += f"TP{tp['level']}: ${tp['price']:.{cfg['decimals']}f} ({tp['pips']:.0f}p) "
 
-                confirm_html = f"""
-            <div style="margin-top:10px; padding:10px; background:#0d1117; border-radius:8px; border:2px solid {gc_color};">
-                <div style="color:{gc_color}; font-size:13px; font-weight:700;">\U0001f9e0 GROK VERDICT: {gc_icon} ({gc_conf}%)</div>
-                <div style="color:#d1d5db; font-size:11px; margin-top:6px; line-height:1.5;">{gc_reason}</div>
+            order_html = f"""
+            <div style="margin-top:8px; padding:10px; background:#1a1500; border-radius:8px; border:1px solid #FFD700;">
+                <div style="color:#FFD700; font-size:12px; font-weight:700;">\u2b50 AI-OPTIMIZED ORDER SETUP</div>
+                <div style="color:#e5e7eb; font-size:11px; margin-top:6px;">
+                    Entry: <b>${us.entry_price:.{cfg['decimals']}f}</b> ({us.entry_type}) — {us.entry_reason[:80]}<br>
+                    SL: <b>${us.sl_price:.{cfg['decimals']}f}</b> ({us.sl_pips:.0f}p) — {us.sl_reason[:80]}<br>
+                    {tp_rows}<br>
+                    R:R = <b>{us.risk_reward:.1f}</b> | {us.num_orders}x {us.lot_size} lot | Risk: <b>${us.max_risk_usd:.2f}</b>
+                </div>
+            </div>"""
+
+        elif grade == "A+":
+            # Fallback: Callisto-only A+ (no unified engine)
+            sl_pips_v = cfg["sl_pips"]
+            tp_pips_v = cfg["tp_pips"]
+            lot = cfg["lot_size"]
+            pip_val = lot * cfg["pip_value"]
+            order_html = f"""
+            <div style="margin-top:10px; padding:10px; background:#1a1500; border-radius:8px; border:1px solid #FFD700;">
+                <div style="color:#FFD700; font-size:12px; font-weight:700;">\u2b50 LAYERED ORDER SETUP (Callisto Only)</div>
+                <div style="color:#e5e7eb; font-size:11px; margin-top:6px;">
+                    {cfg['num_orders']}x {lot} lot | SL: {sl_pips_v} pips |
+                    TPs: {'/'.join(str(t) for t in tp_pips_v)} pips |
+                    Risk: ${pip_val * sl_pips_v * cfg['num_orders']:.2f}
+                </div>
             </div>"""
 
         st.markdown(f"""<div style="background:{grade_bg}; border:1px solid {border_color}; border-radius:12px;
@@ -2196,7 +2251,7 @@ def page_multi_signal():
             <div style="display:flex; justify-content:space-between; align-items:center;">
                 <div>
                     <span style="color:#FFD700; font-size:18px; font-weight:700;">{sym}</span>
-                    <span style="color:#6b7280; font-size:13px;"> {cfg['name']}</span>
+                    <span style="color:#6b7280; font-size:13px;"> {cfg.get('name', sym)}</span>
                     <span style="color:#4b5563; font-size:11px; margin-left:8px;">{cfg['category'].upper()}</span>
                 </div>
                 <div style="text-align:right;">
@@ -2212,9 +2267,8 @@ def page_multi_signal():
                     RSI: {data['rsi']:.1f} | BUY: {data['buy_grade']} ({data['buy_score']}) | SELL: {data['sell_grade']} ({data['sell_score']})
                 </div>
             </div>
-            {grok_html}
+            {unified_html}
             {order_html}
-            {confirm_html}
         </div>""", unsafe_allow_html=True)
 
         # ── Telegram send button for A+ signals ──
@@ -2223,37 +2277,55 @@ def page_multi_signal():
             if notifier and notifier.bot_token:
                 btn_key = f"tg_send_{sym}_{score}"
                 if st.button(f"\U0001f4e8 Send {sym} Signal to Telegram", key=btn_key, type="primary"):
-                    # Build signal dict for Telegram
-                    pip_v = cfg["pip"]
-                    entry_p = data["price"]
-                    if direction == "BUY":
-                        sl_p = entry_p - cfg["sl_pips"] * pip_v
-                        tp_list = [round(entry_p + tp * pip_v, cfg["decimals"]) for tp in cfg["tp_pips"]]
+                    if us and us.is_valid:
+                        # Use unified signal data for Telegram
+                        tg_signal = {
+                            "symbol": sym,
+                            "direction": us.direction,
+                            "grade": us.grade,
+                            "score": us.confidence,
+                            "confidence": "HIGH",
+                            "mode": "SCALP",
+                            "entry_price": us.entry_price,
+                            "sl": us.sl_price,
+                            "tp_levels": [tp["price"] for tp in us.tp_levels],
+                            "risk_pips": us.sl_pips,
+                            "num_orders": us.num_orders,
+                            "lot_size": us.lot_size,
+                            "pip_value": us.lot_size * cfg.get("pip_value", 10),
+                            "modules": us.callisto_modules,
+                            "confirmations": len(us.strategies_confirming),
+                            "contradictions": len(us.strategies_warning),
+                        }
+                        grok_tg = {
+                            "confirmed": us.grok_agrees or us.callisto_agreement in ("AGREE", "PARTIAL"),
+                            "agreement": us.callisto_agreement,
+                            "confidence": us.confidence,
+                            "reasoning": us.why_trade,
+                        }
                     else:
-                        sl_p = entry_p + cfg["sl_pips"] * pip_v
-                        tp_list = [round(entry_p - tp * pip_v, cfg["decimals"]) for tp in cfg["tp_pips"]]
+                        # Fallback: Callisto-only Telegram
+                        pip_v = cfg["pip"]
+                        entry_p = data["price"]
+                        if direction == "BUY":
+                            sl_p = entry_p - cfg["sl_pips"] * pip_v
+                            tp_list = [round(entry_p + tp * pip_v, cfg["decimals"]) for tp in cfg["tp_pips"]]
+                        else:
+                            sl_p = entry_p + cfg["sl_pips"] * pip_v
+                            tp_list = [round(entry_p - tp * pip_v, cfg["decimals"]) for tp in cfg["tp_pips"]]
+                        tg_signal = {
+                            "symbol": sym, "direction": direction, "grade": grade, "score": score,
+                            "confidence": "HIGH", "mode": "SCALP", "entry_price": entry_p,
+                            "sl": round(sl_p, cfg["decimals"]), "tp_levels": tp_list,
+                            "risk_pips": cfg["sl_pips"], "num_orders": cfg["num_orders"],
+                            "lot_size": cfg["lot_size"], "pip_value": cfg["lot_size"] * cfg["pip_value"],
+                            "modules": {}, "confirmations": score // 10, "contradictions": 0,
+                        }
+                        grok_tg = None
 
-                    tg_signal = {
-                        "symbol": sym,
-                        "direction": direction,
-                        "grade": grade,
-                        "score": score,
-                        "confidence": "HIGH",
-                        "mode": "SCALP",
-                        "entry_price": entry_p,
-                        "sl": round(sl_p, cfg["decimals"]),
-                        "tp_levels": tp_list,
-                        "risk_pips": cfg["sl_pips"],
-                        "num_orders": cfg["num_orders"],
-                        "lot_size": cfg["lot_size"],
-                        "pip_value": cfg["lot_size"] * cfg["pip_value"],
-                        "modules": {},  # Module data not available in multi-signal scan
-                        "confirmations": score // 10,
-                        "contradictions": 0,
-                    }
-                    ok = notifier.send_signal_v2(tg_signal, grok_verdict=data.get("grok_confirm"))
+                    ok = notifier.send_signal_v2(tg_signal, grok_verdict=grok_tg)
                     if ok:
-                        st.success(f"\u2705 {sym} signal sent to Telegram!")
+                        st.success(f"\u2705 {sym} unified signal sent to Telegram!")
                     else:
                         st.error("Failed to send. Check bot token.")
 

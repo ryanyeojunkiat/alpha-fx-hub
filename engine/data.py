@@ -142,6 +142,158 @@ def fetch_metaapi_price(symbol: str = "XAUUSD") -> Optional[float]:
         return None
 
 
+def get_metaapi_open_trades() -> Optional[list]:
+    """Fetch all open positions from MT5 via MetaAPI.
+
+    Returns list of dicts, each with:
+        id, symbol, type (buy/sell), volume, openPrice, currentPrice,
+        profit, stopLoss, takeProfit, unrealizedProfit, etc.
+    """
+    try:
+        from config import METAAPI_TOKEN, METAAPI_ACCOUNT
+    except ImportError:
+        METAAPI_TOKEN = os.environ.get("METAAPI_TOKEN", "")
+        METAAPI_ACCOUNT = os.environ.get("METAAPI_ACCOUNT", "")
+
+    if not METAAPI_TOKEN or not METAAPI_ACCOUNT:
+        return None
+
+    cache_key = "metaapi_open_trades"
+    if cache_key in _cache:
+        cached_time, cached_data = _cache[cache_key]
+        if time.time() - cached_time < 10:  # Cache 10s for trades (needs to be fresh)
+            return cached_data
+
+    try:
+        url = f"https://mt-client-api-v1.agiliumtrade.agiliumtrade.ai/users/current/accounts/{METAAPI_ACCOUNT}/positions"
+        headers = {"auth-token": METAAPI_TOKEN}
+        resp = requests.get(url, headers=headers, timeout=10)
+
+        if resp.status_code == 200:
+            data = resp.json()
+            _cache[cache_key] = (time.time(), data)
+            return data
+
+        logger.warning(f"MetaAPI positions fetch failed: {resp.status_code}")
+        return None
+
+    except Exception as e:
+        logger.debug(f"MetaAPI positions error: {e}")
+        return None
+
+
+def get_metaapi_pending_orders() -> Optional[list]:
+    """Fetch all pending orders from MT5 via MetaAPI."""
+    try:
+        from config import METAAPI_TOKEN, METAAPI_ACCOUNT
+    except ImportError:
+        METAAPI_TOKEN = os.environ.get("METAAPI_TOKEN", "")
+        METAAPI_ACCOUNT = os.environ.get("METAAPI_ACCOUNT", "")
+
+    if not METAAPI_TOKEN or not METAAPI_ACCOUNT:
+        return None
+
+    try:
+        url = f"https://mt-client-api-v1.agiliumtrade.agiliumtrade.ai/users/current/accounts/{METAAPI_ACCOUNT}/orders"
+        headers = {"auth-token": METAAPI_TOKEN}
+        resp = requests.get(url, headers=headers, timeout=10)
+
+        if resp.status_code == 200:
+            return resp.json()
+        return None
+
+    except Exception as e:
+        logger.debug(f"MetaAPI orders error: {e}")
+        return None
+
+
+def analyze_trade_liquidity_risk(trades: list, symbol: str,
+                                  current_price: float, pip: float = 0.1) -> dict:
+    """Analyze open trades for liquidity sweep risk.
+
+    Checks if SL levels are clustered at obvious liquidity zones
+    that smart money might target (equal lows, round numbers, etc.)
+
+    Returns dict with:
+        at_risk: bool — True if trades have SL near liquidity zones
+        risk_level: HIGH/MEDIUM/LOW
+        trades_at_risk: list of trade IDs at risk
+        recommendation: str — what to do
+        sl_cluster: float — the SL price cluster
+        nearest_liquidity: float — nearest liquidity level
+    """
+    symbol_trades = [t for t in (trades or []) if t.get("symbol", "").upper() == symbol.upper()]
+
+    if not symbol_trades:
+        return {"at_risk": False, "risk_level": "NONE", "trades_at_risk": [],
+                "recommendation": "No open trades for this symbol."}
+
+    # Collect all SL levels
+    sl_levels = []
+    for t in symbol_trades:
+        sl = t.get("stopLoss", 0)
+        if sl and sl > 0:
+            sl_levels.append(sl)
+
+    if not sl_levels:
+        return {"at_risk": True, "risk_level": "HIGH", "trades_at_risk": [t.get("id") for t in symbol_trades],
+                "recommendation": "DANGER: Trades have NO stop loss set! Add SL immediately."}
+
+    avg_sl = sum(sl_levels) / len(sl_levels)
+    sl_range_pips = (max(sl_levels) - min(sl_levels)) / pip if len(sl_levels) > 1 else 0
+
+    # Check if SL is at a round number (liquidity magnet)
+    round_check = pip * 500  # For gold, this is $50 levels
+    nearest_round = round(avg_sl / round_check) * round_check
+    dist_to_round = abs(avg_sl - nearest_round) / pip
+
+    # Check distance from current price to SL
+    dist_to_sl = abs(current_price - avg_sl) / pip
+
+    # Risk assessment
+    at_risk_ids = []
+    risk_level = "LOW"
+    recommendations = []
+
+    # Rule 1: SL too close to current price (might get swept)
+    if dist_to_sl < 50:  # Less than 50 pips for Gold
+        risk_level = "HIGH"
+        at_risk_ids = [t.get("id") for t in symbol_trades]
+        recommendations.append(f"SL only {dist_to_sl:.0f} pips from price — high sweep risk!")
+
+    # Rule 2: SL at a round number (liquidity zone)
+    if dist_to_round < 20:  # Within 20 pips of round number
+        risk_level = "HIGH" if risk_level != "HIGH" else risk_level
+        recommendations.append(f"SL cluster near ${nearest_round:.2f} (round number liquidity zone)")
+        at_risk_ids = [t.get("id") for t in symbol_trades]
+
+    # Rule 3: All SLs at same level (clustered = obvious target)
+    if sl_range_pips < 5 and len(sl_levels) > 1:
+        if risk_level == "LOW":
+            risk_level = "MEDIUM"
+        recommendations.append("All SLs clustered at same level — easy target for smart money")
+
+    # Rule 4: SL at equal lows/highs pattern
+    # (This would need more historical data, simplified here)
+
+    if not recommendations:
+        recommendations.append("Trade positions look adequately protected.")
+
+    return {
+        "at_risk": risk_level in ("HIGH", "MEDIUM"),
+        "risk_level": risk_level,
+        "trades_at_risk": at_risk_ids,
+        "recommendation": " | ".join(recommendations),
+        "sl_cluster": avg_sl,
+        "nearest_liquidity": nearest_round,
+        "dist_to_sl_pips": dist_to_sl,
+        "dist_to_round_pips": dist_to_round,
+        "total_trades": len(symbol_trades),
+        "total_volume": sum(t.get("volume", 0) for t in symbol_trades),
+        "total_profit": sum(t.get("profit", 0) for t in symbol_trades),
+    }
+
+
 def get_metaapi_account_info() -> Optional[dict]:
     """Get MT5 account info (balance, equity, margin, etc.)."""
     try:
