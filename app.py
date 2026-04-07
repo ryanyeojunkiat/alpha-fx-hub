@@ -43,6 +43,8 @@ from config import (
     RISK_CONSERVATIVE_PCT, RISK_MODERATE_PCT, RISK_AGGRESSIVE_PCT,
     MAX_DAILY_LOSS_PCT, MAX_DRAWDOWN_PCT,
     GOLD_IMPACT_EVENTS,
+    SYMBOLS, ACTIVE_SYMBOLS,
+    GROK_API_KEY,
 )
 # Legacy alias
 TELEGRAM_CHANNEL_ID = TELEGRAM_PRIVATE_CHANNEL_ID
@@ -51,6 +53,7 @@ from engine.gold_engine import gold_engine_score, detect_choch_realtime, detect_
 from engine.levels import compute_levels, compute_10tp_levels, compute_lot_tiers, compute_trailing_sl
 from engine.data import fetch_bars, fetch_price, fetch_metaapi_price, get_metaapi_account_info
 from engine.signal_scanner import SignalScanner, Signal
+from engine.grok_engine import GrokEngine, get_grok_engine
 from trading.trade_manager import TradeManager, Trade, STRATEGIES
 from trading.risk_manager import RiskManager
 from academy.lessons import ACADEMY_LESSONS, SIGNAL_MANUAL
@@ -230,6 +233,14 @@ def init_state():
     if "balance" not in st.session_state:
         st.session_state.balance = 10000.0
 
+    # ── Grok xAI Engine ──
+    if "grok" not in st.session_state:
+        st.session_state.grok = get_grok_engine()
+    if "grok_chat_history" not in st.session_state:
+        st.session_state.grok_chat_history = []
+    if "active_symbol" not in st.session_state:
+        st.session_state.active_symbol = "XAUUSD"
+
     # ── Notification Manager (for sending signals to channels) ──
     # NOTE: Telegram bot polling runs separately via bot_runner.py on Railway
     if "notifier" not in st.session_state:
@@ -276,14 +287,14 @@ with st.sidebar:
         </div>
         """, unsafe_allow_html=True)
     st.markdown(f"""<div style="text-align:center; color:#6b7280; font-size:11px; margin-top:-8px;">
-        XAUUSD Gold Trading Platform v{VERSION}
+        Multi-Symbol Trading Platform v{VERSION}
     </div>""", unsafe_allow_html=True)
 
     st.divider()
 
     pages = {
         "home": ("\U0001f3e0", "Home"),
-        "dashboard": ("\U0001f4ca", "Signal Dashboard"),
+        "dashboard": ("\U0001f4ca", "Gold Dashboard"),
         "academy": ("\U0001f393", "Trading Academy"),
         "manual": ("\U0001f4d6", "Signal Manual"),
         "calendar": ("\U0001f4c5", "Economic Calendar"),
@@ -291,9 +302,11 @@ with st.sidebar:
         "tracker": ("\U0001f4cc", "Live Trade Tracker"),
         "scoreboard": ("\U0001f3c6", "Performance Scoreboard"),
         "regime": ("\U0001f30d", "Market Regime"),
+        "multi_signal": ("\U0001f310", "Signal Hub"),
+        "grok_ai": ("\U0001f9e0", "Grok AI Chat"),
         "assistant": ("\U0001f916", "Decision Assistant"),
         "backtest": ("\U0001f52c", "Backtest Engine"),
-        "ai_insights": ("\U0001f9e0", "AI Learning"),
+        "ai_insights": ("\U0001f4a1", "AI Learning"),
     }
 
     for key, (icon, label) in pages.items():
@@ -519,7 +532,7 @@ def page_home():
             st.image(logo_path, use_container_width=True)
     st.markdown("""
     <div class="gold-header" style="text-align:center;">
-        <div class="subtitle" style="font-size:16px;">Professional XAUUSD Gold Trading Platform | 20-Module Institutional Signal Engine</div>
+        <div class="subtitle" style="font-size:16px;">Professional XAUUSD Gold Trading Platform | V6 Callisto Optimized | 26-Module Engine | A+ Only</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -607,7 +620,7 @@ def page_home():
 def page_dashboard():
     st.markdown("""<div class="gold-header">
         <h1>\U0001f4ca Signal Dashboard</h1>
-        <div class="subtitle">XAUUSD Gold Signals | 20-Module Institutional Engine | Annotated Charts</div>
+        <div class="subtitle">XAUUSD Gold Signals | V6 Callisto + Grok AI | A+ Only | 200-pip SL | 5x Layered Orders</div>
     </div>""", unsafe_allow_html=True)
 
     if st_autorefresh:
@@ -670,12 +683,165 @@ def page_dashboard():
     elif sell_result:
         best = sell_result
 
+    # A+ FILTER NOTICE
+    if best and best["grade"] != "A+":
+        st.markdown(f"""<div style="background:#1a1a2e; border:2px solid #F5A623; border-radius:12px; padding:16px; margin:12px 0;">
+            <div style="color:#F5A623; font-size:16px; font-weight:700;">
+                \u26a0\ufe0f Signal Grade: {best['grade']} — NOT A+ (No Trade)
+            </div>
+            <div style="color:#9ca3af; margin-top:4px;">
+                V6 Callisto Optimized only takes A+ entries. Wait for higher conviction setup.
+                A+ filter gives 1.66 profit factor with 23.8% max drawdown.
+            </div>
+        </div>""", unsafe_allow_html=True)
+
     # Chart with annotations
     if df_m15 is not None and best:
         levels = compute_levels(df_m15, best["direction"])
         fig = build_annotated_chart(df_m15, best, levels,
                                    title=f"XAUUSD M15 | {best['direction']} {best['grade']} ({best['score']}/100)")
         st.plotly_chart(fig, use_container_width=True)
+
+    # ── LAYERED ORDER SETUP (V6 Optimized) ──
+    if best and best["grade"] == "A+" and df_m15 is not None:
+        levels = compute_levels(df_m15, best["direction"])
+        if levels.get("valid"):
+            entry = levels["entry"]
+            sl = levels["sl"]
+            direction = best["direction"]
+            PIP = 0.1
+            tp_pips_list = [200, 400, 600, 800, 1000]
+
+            st.markdown(f"""<div style="background:linear-gradient(135deg, #0d1117, #1a1a2e); border:2px solid #FFD700;
+                border-radius:12px; padding:20px; margin:16px 0;">
+                <div style="color:#FFD700; font-size:20px; font-weight:700; margin-bottom:12px;">
+                    \u2b50 A+ LAYERED ORDER SETUP — {direction}
+                </div>
+                <table style="width:100%; color:#e5e7eb; border-collapse:collapse;">
+                    <tr style="border-bottom:1px solid #333;">
+                        <th style="text-align:left; padding:8px; color:#FFD700;">Order</th>
+                        <th style="text-align:center; padding:8px; color:#FFD700;">Lot</th>
+                        <th style="text-align:center; padding:8px; color:#FFD700;">Entry</th>
+                        <th style="text-align:center; padding:8px; color:#ef4444;">SL</th>
+                        <th style="text-align:center; padding:8px; color:#10b981;">TP</th>
+                        <th style="text-align:center; padding:8px; color:#10b981;">TP Pips</th>
+                        <th style="text-align:center; padding:8px; color:#10b981;">$ if Hit</th>
+                    </tr>""")
+
+            rows_html = ""
+            for i, tp_pips in enumerate(tp_pips_list):
+                if direction == "BUY":
+                    tp_price = round(entry + tp_pips * PIP, 2)
+                else:
+                    tp_price = round(entry - tp_pips * PIP, 2)
+                profit = 0.01 * tp_pips * 10  # $0.10/pip * pips
+                rows_html += f"""<tr style="border-bottom:1px solid #222;">
+                    <td style="padding:8px; color:#FFD700; font-weight:700;">#{i+1}</td>
+                    <td style="text-align:center; padding:8px;">0.01</td>
+                    <td style="text-align:center; padding:8px;">${entry:,.2f}</td>
+                    <td style="text-align:center; padding:8px; color:#ef4444;">${sl:,.2f}</td>
+                    <td style="text-align:center; padding:8px; color:#10b981;">${tp_price:,.2f}</td>
+                    <td style="text-align:center; padding:8px;">{tp_pips}</td>
+                    <td style="text-align:center; padding:8px; color:#10b981;">+${profit:.2f}</td>
+                </tr>"""
+
+            total_risk = 0.01 * 200 * 10 * 5  # 5 orders x $0.10/pip x 200 pips
+            best_profit = sum(0.01 * tp * 10 for tp in tp_pips_list)
+
+            st.markdown(f"""{rows_html}
+                </table>
+                <div style="margin-top:16px; padding-top:12px; border-top:1px solid #FFD700;">
+                    <div style="display:flex; justify-content:space-between;">
+                        <span style="color:#ef4444; font-weight:700;">
+                            Full SL Loss: -${total_risk:.2f}
+                        </span>
+                        <span style="color:#F5A623; font-weight:700;">
+                            TP1 Only + BE: +${0.01 * 200 * 10:.2f}
+                        </span>
+                        <span style="color:#10b981; font-weight:700;">
+                            All 5 TPs: +${best_profit:.2f}
+                        </span>
+                    </div>
+                    <div style="color:#9ca3af; margin-top:8px; font-size:12px;">
+                        \u2139\ufe0f After TP1 hits \u2192 Move SL for orders #2-#5 to Breakeven + 2 pips |
+                        Max 2 losses/day | London + NY sessions only
+                    </div>
+                </div>
+            </div>""", unsafe_allow_html=True)
+
+        # ── GROK AI CONFIRMATION (inline on A+ signals) ──
+        grok = st.session_state.get("grok")
+        if grok and grok.is_available:
+            st.markdown("""<div style="color:#9ca3af; font-size:12px; margin:8px 0;">
+                \U0001f9e0 Grok AI auto-confirming A+ signal...</div>""", unsafe_allow_html=True)
+            with st.spinner("Grok analyzing..."):
+                grok_cfg = SYMBOLS.get("XAUUSD", {})
+                grok_result = grok.confirm_signal("XAUUSD", grok_cfg, {
+                    "direction": best["direction"],
+                    "grade": "A+",
+                    "score": best["score"],
+                    "entry_price": entry,
+                    "confidence": best["confidence"],
+                }, df_m15)
+
+            if grok_result:
+                g_confirmed = grok_result.get("confirmed", False)
+                g_agreement = grok_result.get("agreement", "CAUTION")
+                g_conf = grok_result.get("confidence", 0)
+                g_reasoning = grok_result.get("reasoning", "")
+                g_color = "#10b981" if g_confirmed else "#ef4444" if g_agreement == "DISAGREE" else "#F5A623"
+                g_icon = "\u2705" if g_confirmed else "\u274c" if g_agreement == "DISAGREE" else "\u26a0\ufe0f"
+
+                st.markdown(f"""<div style="background:#0d1117; border:2px solid {g_color};
+                    border-radius:12px; padding:16px; margin:12px 0;">
+                    <div style="font-size:18px; font-weight:700; color:{g_color};">
+                        \U0001f9e0 GROK: {g_icon} {g_agreement} — Confidence {g_conf}%
+                    </div>
+                    <div style="color:#d1d5db; margin-top:8px; line-height:1.5;">
+                        {g_reasoning}
+                    </div>
+                </div>""", unsafe_allow_html=True)
+
+                g_adj = grok_result.get("adjustments", {})
+                if g_adj and g_adj.get("notes"):
+                    st.info(f"\U0001f9e0 Grok suggests: {g_adj.get('notes', '')}")
+
+        # ── Send Gold A+ signal to Telegram ──
+        notifier = st.session_state.get("notifier")
+        if notifier and notifier.bot_token:
+            if st.button("\U0001f4e8 Send Gold A+ Signal to Telegram", type="primary"):
+                PIP_GOLD = 0.1
+                tp_pips_list = [200, 400, 600, 800, 1000]
+                if best["direction"] == "BUY":
+                    sl_price = round(entry - 200 * PIP_GOLD, 2)
+                    tp_prices = [round(entry + tp * PIP_GOLD, 2) for tp in tp_pips_list]
+                else:
+                    sl_price = round(entry + 200 * PIP_GOLD, 2)
+                    tp_prices = [round(entry - tp * PIP_GOLD, 2) for tp in tp_pips_list]
+
+                tg_signal = {
+                    "symbol": "XAUUSD",
+                    "direction": best["direction"],
+                    "grade": "A+",
+                    "score": best["score"],
+                    "confidence": best["confidence"],
+                    "mode": "SCALP",
+                    "entry_price": entry,
+                    "sl": sl_price,
+                    "tp_levels": tp_prices,
+                    "risk_pips": 200,
+                    "num_orders": 5,
+                    "lot_size": 0.01,
+                    "pip_value": 0.10,
+                    "modules": best.get("modules", {}),
+                    "confirmations": best.get("confirmations", 0),
+                    "contradictions": best.get("contradictions", 0),
+                }
+                ok = notifier.send_signal_v2(tg_signal, grok_verdict=grok_result if grok_result else None)
+                if ok:
+                    st.success("\u2705 Gold A+ signal sent to Telegram!")
+                else:
+                    st.error("Failed to send. Check bot token.")
 
     # Module breakdown
     if best:
@@ -699,6 +865,13 @@ def page_dashboard():
             "displacement": "Displacement",
             "bb_squeeze": "BB Squeeze",
             "round_numbers": "Round Numbers",
+            # Callisto FX V6 Modules
+            "trc": "\u2b50 TRC Framework",
+            "wcr_range": "WCR Range",
+            "breaker_block": "Breaker Block",
+            "premium_discount": "Premium/Discount",
+            "candlestick": "Candlestick Patterns",
+            "risk_enforcer": "Risk Enforcer",
         }
 
         cols = st.columns(4)
@@ -915,8 +1088,8 @@ def page_risk_calc():
     with col1:
         balance = st.number_input("Account Balance ($)", value=st.session_state.balance,
                                   min_value=100.0, step=100.0)
-        sl_pips = st.number_input("Stop Loss (pips)", value=100.0, min_value=1.0, step=10.0,
-                                  help="For gold: 1 pip = $0.10. 100 pips = $10.00 move")
+        sl_pips = st.number_input("Stop Loss (pips)", value=200.0, min_value=1.0, step=10.0,
+                                  help="V6 Optimized: 200 pips SL. Gold 1 pip = $0.10. 200 pips = $20.00 move")
         entry_price = st.number_input("Entry Price ($)", value=3100.0, step=0.10)
 
     with col2:
@@ -1832,6 +2005,412 @@ def page_decision_assistant():
 
 
 # ═════════════════════════════════════════════════════════════
+# PAGE: MULTI-SYMBOL SIGNALS
+# ═════════════════════════════════════════════════════════════
+def page_multi_signal():
+    st.markdown("""<div class="gold-header">
+        <h1>\U0001f310 Signal Hub</h1>
+        <div class="subtitle">All 10 Symbols × V6 Callisto Engine × Grok AI | A+ Only | One-Screen Trading</div>
+    </div>""", unsafe_allow_html=True)
+
+    if st_autorefresh:
+        st_autorefresh(interval=30000, limit=None, key="multi_refresh")
+
+    grok = st.session_state.grok
+
+    # Symbol selector
+    col_filter, col_grok = st.columns([3, 1])
+    with col_filter:
+        categories = st.multiselect("Filter by category",
+            ["commodity", "forex", "crypto"],
+            default=["commodity", "forex", "crypto"])
+    with col_grok:
+        use_grok = st.checkbox("Grok AI Analysis", value=grok.is_available,
+                               disabled=not grok.is_available)
+        if not grok.is_available:
+            st.caption("Add GROK_API_KEY to enable")
+
+    filtered_symbols = {k: v for k, v in SYMBOLS.items()
+                        if v["category"] in categories}
+
+    # Scan all symbols
+    results = {}
+    progress = st.progress(0)
+    status_text = st.empty()
+
+    for i, (sym, cfg) in enumerate(filtered_symbols.items()):
+        status_text.text(f"Scanning {sym}...")
+        progress.progress((i + 1) / len(filtered_symbols))
+
+        try:
+            td_code = cfg["td_code"]
+            df_m15 = fetch_bars(td_code, "15min", 200, TWELVE_DATA_API_KEY)
+            df_h1 = fetch_bars(td_code, "1h", 200, TWELVE_DATA_API_KEY)
+            df_h4 = fetch_bars(td_code, "4h", 200, TWELVE_DATA_API_KEY)
+
+            if df_m15 is not None:
+                df_m15 = add_indicators(df_m15)
+            if df_h1 is not None:
+                df_h1 = add_indicators(df_h1)
+            if df_h4 is not None:
+                df_h4 = add_indicators(df_h4)
+
+            if df_m15 is None:
+                results[sym] = {"error": "No data"}
+                continue
+
+            price = float(df_m15["close"].iloc[-1])
+            rsi = float(df_m15["rsi14"].iloc[-1]) if "rsi14" in df_m15.columns else 50
+            atr = float(df_m15["atr14"].iloc[-1]) if "atr14" in df_m15.columns else 0
+
+            # Run gold engine for both directions (works for all symbols)
+            buy_r = gold_engine_score(df_m15, df_h1, df_h4, "BUY")
+            sell_r = gold_engine_score(df_m15, df_h1, df_h4, "SELL")
+
+            best = buy_r if (buy_r and buy_r["score"] >= (sell_r["score"] if sell_r else 0)) else sell_r
+
+            # Grok analysis + confirmation for A+ signals
+            grok_result = None
+            grok_confirm = None
+            if use_grok and grok.is_available and best:
+                grok_result = grok.analyze_market(sym, cfg, df_m15, df_h1, df_h4)
+                # Auto-confirm A+ signals with Grok
+                if best.get("grade") == "A+":
+                    grok_confirm = grok.confirm_signal(sym, cfg, {
+                        "direction": best["direction"],
+                        "grade": "A+",
+                        "score": best["score"],
+                        "entry_price": price,
+                        "confidence": best.get("confidence", "HIGH"),
+                    }, df_m15)
+
+            results[sym] = {
+                "price": price, "rsi": rsi, "atr": atr,
+                "buy_grade": buy_r["grade"] if buy_r else "N/A",
+                "buy_score": buy_r["score"] if buy_r else 0,
+                "sell_grade": sell_r["grade"] if sell_r else "N/A",
+                "sell_score": sell_r["score"] if sell_r else 0,
+                "best_dir": best["direction"] if best else "N/A",
+                "best_grade": best["grade"] if best else "N/A",
+                "best_score": best["score"] if best else 0,
+                "cfg": cfg,
+                "grok": grok_result,
+                "grok_confirm": grok_confirm,
+            }
+
+        except Exception as e:
+            results[sym] = {"error": str(e)[:100]}
+
+    progress.empty()
+    status_text.empty()
+
+    # Display results as cards
+    for sym, data in sorted(results.items(),
+                             key=lambda x: x[1].get("best_score", 0), reverse=True):
+        if "error" in data:
+            continue
+
+        cfg = data["cfg"]
+        grade = data["best_grade"]
+        score = data["best_score"]
+        direction = data["best_dir"]
+
+        # Color based on grade
+        if grade == "A+":
+            border_color = "#FFD700"
+            grade_bg = "#2d2b00"
+        elif grade == "A":
+            border_color = "#10b981"
+            grade_bg = "#0d2818"
+        elif grade == "B":
+            border_color = "#3b82f6"
+            grade_bg = "#0d1b33"
+        else:
+            border_color = "#4b5563"
+            grade_bg = "#1a1a2e"
+
+        dir_color = "#10b981" if direction == "BUY" else "#ef4444" if direction == "SELL" else "#6b7280"
+        dir_icon = "\U0001f7e2" if direction == "BUY" else "\U0001f534" if direction == "SELL" else "\u26aa"
+
+        # Grok analysis inline
+        grok_html = ""
+        if data.get("grok"):
+            g = data["grok"]
+            grok_bias = g.get("bias", "N/A")
+            grok_conf = g.get("confidence", 0)
+            grok_grade = g.get("grade", "N/A")
+            grok_reason = g.get("reasoning", "")[:200]
+            grok_color = "#10b981" if grok_bias == "BUY" else "#ef4444" if grok_bias == "SELL" else "#6b7280"
+
+            # Check agreement
+            agrees = grok_bias == direction
+            agree_icon = "\u2705" if agrees else "\u274c"
+            agree_text = "AGREES" if agrees else "DISAGREES"
+
+            grok_html = f"""
+            <div style="margin-top:10px; padding:10px; background:#0d1117; border-radius:8px; border-left:3px solid {grok_color};">
+                <div style="color:#9ca3af; font-size:11px;">\U0001f9e0 GROK AI {agree_icon} {agree_text}</div>
+                <div style="color:{grok_color}; font-weight:700;">{grok_bias} | Confidence: {grok_conf}% | Grade: {grok_grade}</div>
+                <div style="color:#6b7280; font-size:11px; margin-top:4px;">{grok_reason}</div>
+            </div>"""
+
+        # Order setup + Grok confirmation for A+ signals
+        order_html = ""
+        confirm_html = ""
+        if grade == "A+":
+            sl_pips = cfg["sl_pips"]
+            tp_pips = cfg["tp_pips"]
+            pip = cfg["pip"]
+            lot = cfg["lot_size"]
+            price_val = data["price"]
+            pip_val = lot * cfg["pip_value"]
+
+            order_html = f"""
+            <div style="margin-top:10px; padding:10px; background:#1a1500; border-radius:8px; border:1px solid #FFD700;">
+                <div style="color:#FFD700; font-size:12px; font-weight:700;">\u2b50 LAYERED ORDER SETUP</div>
+                <div style="color:#e5e7eb; font-size:11px; margin-top:6px;">
+                    {cfg['num_orders']}x {lot} lot | SL: {sl_pips} pips |
+                    TPs: {'/'.join(str(t) for t in tp_pips)} pips |
+                    Risk: ${pip_val * sl_pips * cfg['num_orders']:.2f}
+                </div>
+            </div>"""
+
+            # Grok confirmation verdict
+            gc = data.get("grok_confirm")
+            if gc:
+                gc_confirmed = gc.get("confirmed", False)
+                gc_agreement = gc.get("agreement", "CAUTION")
+                gc_conf = gc.get("confidence", 0)
+                gc_reason = gc.get("reasoning", "")[:250]
+                gc_color = "#10b981" if gc_confirmed else "#ef4444" if gc_agreement == "DISAGREE" else "#F5A623"
+                gc_icon = "\u2705 APPROVED" if gc_confirmed else "\u274c REJECTED" if gc_agreement == "DISAGREE" else "\u26a0\ufe0f CAUTION"
+
+                confirm_html = f"""
+            <div style="margin-top:10px; padding:10px; background:#0d1117; border-radius:8px; border:2px solid {gc_color};">
+                <div style="color:{gc_color}; font-size:13px; font-weight:700;">\U0001f9e0 GROK VERDICT: {gc_icon} ({gc_conf}%)</div>
+                <div style="color:#d1d5db; font-size:11px; margin-top:6px; line-height:1.5;">{gc_reason}</div>
+            </div>"""
+
+        st.markdown(f"""<div style="background:{grade_bg}; border:1px solid {border_color}; border-radius:12px;
+            padding:16px; margin:8px 0;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <div>
+                    <span style="color:#FFD700; font-size:18px; font-weight:700;">{sym}</span>
+                    <span style="color:#6b7280; font-size:13px;"> {cfg['name']}</span>
+                    <span style="color:#4b5563; font-size:11px; margin-left:8px;">{cfg['category'].upper()}</span>
+                </div>
+                <div style="text-align:right;">
+                    <span style="color:white; font-size:16px; font-family:'Space Mono',monospace;">${data['price']:.{cfg['decimals']}f}</span>
+                </div>
+            </div>
+            <div style="display:flex; justify-content:space-between; margin-top:10px;">
+                <div>
+                    {dir_icon} <span style="color:{dir_color}; font-weight:700; font-size:15px;">{direction}</span>
+                    <span style="color:white; font-size:13px; margin-left:8px;">Grade: <b>{grade}</b> ({score}/100)</span>
+                </div>
+                <div style="color:#9ca3af; font-size:12px;">
+                    RSI: {data['rsi']:.1f} | BUY: {data['buy_grade']} ({data['buy_score']}) | SELL: {data['sell_grade']} ({data['sell_score']})
+                </div>
+            </div>
+            {grok_html}
+            {order_html}
+            {confirm_html}
+        </div>""", unsafe_allow_html=True)
+
+        # ── Telegram send button for A+ signals ──
+        if grade == "A+":
+            notifier = st.session_state.get("notifier")
+            if notifier and notifier.bot_token:
+                btn_key = f"tg_send_{sym}_{score}"
+                if st.button(f"\U0001f4e8 Send {sym} Signal to Telegram", key=btn_key, type="primary"):
+                    # Build signal dict for Telegram
+                    pip_v = cfg["pip"]
+                    entry_p = data["price"]
+                    if direction == "BUY":
+                        sl_p = entry_p - cfg["sl_pips"] * pip_v
+                        tp_list = [round(entry_p + tp * pip_v, cfg["decimals"]) for tp in cfg["tp_pips"]]
+                    else:
+                        sl_p = entry_p + cfg["sl_pips"] * pip_v
+                        tp_list = [round(entry_p - tp * pip_v, cfg["decimals"]) for tp in cfg["tp_pips"]]
+
+                    tg_signal = {
+                        "symbol": sym,
+                        "direction": direction,
+                        "grade": grade,
+                        "score": score,
+                        "confidence": "HIGH",
+                        "mode": "SCALP",
+                        "entry_price": entry_p,
+                        "sl": round(sl_p, cfg["decimals"]),
+                        "tp_levels": tp_list,
+                        "risk_pips": cfg["sl_pips"],
+                        "num_orders": cfg["num_orders"],
+                        "lot_size": cfg["lot_size"],
+                        "pip_value": cfg["lot_size"] * cfg["pip_value"],
+                        "modules": {},  # Module data not available in multi-signal scan
+                        "confirmations": score // 10,
+                        "contradictions": 0,
+                    }
+                    ok = notifier.send_signal_v2(tg_signal, grok_verdict=data.get("grok_confirm"))
+                    if ok:
+                        st.success(f"\u2705 {sym} signal sent to Telegram!")
+                    else:
+                        st.error("Failed to send. Check bot token.")
+
+
+# ═════════════════════════════════════════════════════════════
+# PAGE: GROK AI ANALYST
+# ═════════════════════════════════════════════════════════════
+def page_grok_ai():
+    st.markdown("""<div class="gold-header">
+        <h1>\U0001f9e0 Grok AI Chat</h1>
+        <div class="subtitle">Powered by xAI | Deep Market Analysis & Live Trading Q&A</div>
+    </div>""", unsafe_allow_html=True)
+
+    grok = st.session_state.grok
+
+    if not grok.is_available:
+        st.error("Grok API key not configured. Add GROK_API_KEY to your .env or Streamlit secrets.")
+        st.code("GROK_API_KEY=xai-your-key-here")
+        return
+
+    st.success(f"Grok AI connected | Model: {grok.analysis_model}")
+    st.caption("\U0001f4a1 Signal confirmation is built into the Dashboard & Signal Hub — no need to switch pages!")
+
+    tab1, tab3 = st.tabs(["\U0001f4ca Deep Analysis", "\U0001f4ac Trading Chat"])
+
+    # ── TAB 1: MARKET ANALYSIS ──
+    with tab1:
+        st.markdown("### Ask Grok to analyze any symbol")
+
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            sym = st.selectbox("Select Symbol", list(SYMBOLS.keys()),
+                               index=list(SYMBOLS.keys()).index(st.session_state.active_symbol))
+        with col2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            analyze_btn = st.button("\U0001f50d Analyze Now", type="primary", use_container_width=True)
+
+        if analyze_btn:
+            cfg = SYMBOLS[sym]
+            with st.spinner(f"Grok is analyzing {sym}..."):
+                df_m15 = fetch_bars(cfg["td_code"], "15min", 200, TWELVE_DATA_API_KEY)
+                df_h1 = fetch_bars(cfg["td_code"], "1h", 200, TWELVE_DATA_API_KEY)
+                df_h4 = fetch_bars(cfg["td_code"], "4h", 200, TWELVE_DATA_API_KEY)
+
+                if df_m15 is not None:
+                    df_m15 = add_indicators(df_m15)
+                if df_h1 is not None:
+                    df_h1 = add_indicators(df_h1)
+                if df_h4 is not None:
+                    df_h4 = add_indicators(df_h4)
+
+                result = grok.analyze_market(sym, cfg, df_m15, df_h1, df_h4)
+
+            if result:
+                bias = result.get("bias", "NO_TRADE")
+                conf = result.get("confidence", 0)
+                grade = result.get("grade", "N/A")
+                reasoning = result.get("reasoning", "")
+
+                bias_color = "#10b981" if bias == "BUY" else "#ef4444" if bias == "SELL" else "#6b7280"
+                bias_icon = "\U0001f7e2" if bias == "BUY" else "\U0001f534" if bias == "SELL" else "\u26aa"
+
+                st.markdown(f"""<div style="background:#0d1117; border:2px solid {bias_color};
+                    border-radius:12px; padding:20px; margin:16px 0;">
+                    <div style="font-size:24px; font-weight:700; color:{bias_color};">
+                        {bias_icon} GROK: {bias} {sym}
+                    </div>
+                    <div style="color:white; margin-top:8px;">
+                        Confidence: <b>{conf}%</b> | Grade: <b>{grade}</b>
+                    </div>
+                    <div style="color:#d1d5db; margin-top:12px; line-height:1.6;">
+                        {reasoning}
+                    </div>
+                </div>""", unsafe_allow_html=True)
+
+                # Entry details
+                entry = result.get("entry", {})
+                if entry and entry.get("price"):
+                    st.markdown(f"""<div style="background:#111827; border-radius:8px; padding:16px; margin:8px 0;">
+                        <div style="color:#FFD700; font-weight:700;">Grok's Calculated Entry:</div>
+                        <div style="color:#e5e7eb; margin-top:8px;">
+                            Entry: <b>${entry.get('price', 0):.5f}</b> |
+                            SL: <b>${entry.get('sl', 0):.5f}</b> |
+                            TP1: <b>${entry.get('tp1', 0):.5f}</b> |
+                            TP2: <b>${entry.get('tp2', 0):.5f}</b> |
+                            TP3: <b>${entry.get('tp3', 0):.5f}</b>
+                        </div>
+                        <div style="color:#9ca3af; margin-top:8px; font-size:12px;">
+                            Reason: {entry.get('reason', '')}
+                        </div>
+                    </div>""", unsafe_allow_html=True)
+
+                # Risk warning
+                risk_warning = result.get("risk_warning", "")
+                if risk_warning:
+                    st.warning(f"\u26a0\ufe0f {risk_warning}")
+
+                # Analysis details
+                analysis = result.get("analysis", {})
+                if analysis:
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("Trend", analysis.get("trend", "N/A"))
+                    with col2:
+                        st.metric("Momentum", analysis.get("momentum", "N/A"))
+                    with col3:
+                        st.metric("Volatility", analysis.get("volatility", "N/A"))
+                    with col4:
+                        levels = analysis.get("key_levels", {})
+                        st.metric("Support", f"${levels.get('support', 0):.2f}")
+            else:
+                st.error("Grok analysis failed. Check API key and try again.")
+
+    # ── TAB 2: TRADING CHAT ──
+    with tab3:
+        st.markdown("### Chat with Grok about trading")
+
+        # Build context
+        context_parts = [f"Platform: Alpha FX Hub v{VERSION}"]
+        try:
+            overview = st.session_state.scanner.get_market_overview()
+            context_parts.append(f"Gold: ${overview.get('price', 0):.2f} | Bias: {overview.get('bias', 'N/A')}")
+            context_parts.append(f"RSI: {overview.get('rsi', 50):.1f} | ATR: {overview.get('atr', 0):.2f}")
+        except Exception:
+            pass
+        context = "\n".join(context_parts)
+
+        # Display chat history
+        for msg in st.session_state.grok_chat_history:
+            role = msg["role"]
+            with st.chat_message("user" if role == "user" else "assistant",
+                                  avatar="\U0001f468\u200d\U0001f4bb" if role == "user" else "\U0001f9e0"):
+                st.markdown(msg["content"])
+
+        # Chat input
+        user_msg = st.chat_input("Ask Grok anything about trading...")
+        if user_msg:
+            st.session_state.grok_chat_history.append({"role": "user", "content": user_msg})
+
+            with st.chat_message("user", avatar="\U0001f468\u200d\U0001f4bb"):
+                st.markdown(user_msg)
+
+            with st.chat_message("assistant", avatar="\U0001f9e0"):
+                with st.spinner("Grok thinking..."):
+                    response = grok.chat(user_msg, context=context)
+                if response:
+                    st.markdown(response)
+                    st.session_state.grok_chat_history.append({"role": "assistant", "content": response})
+                else:
+                    st.error("Grok failed to respond. Try again.")
+
+        if st.button("Clear Chat History"):
+            st.session_state.grok_chat_history = []
+            st.rerun()
+
+
+# ═════════════════════════════════════════════════════════════
 # PAGE ROUTER
 # ═════════════════════════════════════════════════════════════
 PAGE_MAP = {
@@ -1847,6 +2426,8 @@ PAGE_MAP = {
     "regime": page_regime,
     "backtest": page_backtest,
     "ai_insights": page_ai_insights,
+    "multi_signal": page_multi_signal,
+    "grok_ai": page_grok_ai,
 }
 
 # Route to current page
@@ -1857,7 +2438,7 @@ page_fn()
 # Footer
 st.markdown("""
 <div style="text-align:center; padding:20px 0; color:#4b5563; font-size:11px; border-top:1px solid #1f2937; margin-top:40px;">
-    \u25c8 Alpha FX Hub v{version} | XAUUSD Gold Trading Platform<br>
+    \u25c8 Alpha FX Hub v{version} | Multi-Symbol Trading Platform | Powered by Grok xAI<br>
     <i>Risk Disclaimer: Trading involves substantial risk. Past performance does not guarantee future results.
     Only trade with capital you can afford to lose.</i>
 </div>

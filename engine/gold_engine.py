@@ -1,15 +1,24 @@
 """
-Alpha FX Hub — Gold Engine V5 Institutional
-=============================================
-20-module XAUUSD analysis system combining:
-- Gold Engine V4 (17 technical modules + scoring + structure)
-- NEW Module 18: COT Data + DXY Correlation (institutional positioning)
-- NEW Module 19: Smart News Filter (auto-pause before high-impact events)
-- NEW Module 20: Volume Confirmation (breakout validation + accumulation)
-- Real-time CHoCH monitoring for open trade protection
-- FVG second-wave entry detection
+Alpha FX Hub — Gold Engine V6 Callisto
+========================================
+26-module XAUUSD analysis system built on the Callisto FX framework:
 
-Technical + Institutional — following the smart money.
+CORE FRAMEWORK: T.R.C. (Trend × Reversal × Continuation)
+- Multi-timeframe analysis: Daily → 4H → 1H → 15M → 5M
+- 2/3 rule: need 2 out of 3 higher TFs aligned
+- CHoCH on 5M with BODY close (wick-only = invalid)
+- Retest of CHoCH level for entry
+- 3 layers of defense minimum
+
+ORIGINAL MODULES (1-20): Carried forward from V5
+MODULE 21: TRC Score (Trend × Reversal × Continuation)
+MODULE 22: WCR Range Detection (William-Certified Range)
+MODULE 23: Breaker Block + SMA44 Strategy
+MODULE 24: Premium/Discount Array (ICT Fib 50% equilibrium)
+MODULE 25: Expanded Candlestick Patterns (Callisto FX full set)
+MODULE 26: Callisto Risk Enforcer (max 2 losses/day, session lock)
+
+Callisto FX — 90.7% tracked win rate framework.
 """
 import numpy as np
 import pandas as pd
@@ -20,7 +29,8 @@ import logging
 from .indicators import (
     add_indicators, find_swing_points, fibonacci_levels,
     detect_displacement, detect_fvg_candles, detect_engulfing,
-    bb_squeeze_active,
+    bb_squeeze_active, detect_candlestick_patterns,
+    detect_breaker_blocks, detect_wcr_range, detect_premium_discount,
 )
 from .institutional import score_cot_dxy, score_news_filter, score_volume, COTAnalyzer
 
@@ -54,8 +64,17 @@ def _trend_from_emas(df: pd.DataFrame) -> str:
     return "neutral"
 
 
-def _mtf_alignment(df_entry, df_h1, df_h4, direction: str) -> dict:
-    """Score multi-timeframe alignment across 3 timeframes."""
+def _mtf_alignment(df_entry, df_h1, df_h4, direction: str,
+                    df_daily=None) -> dict:
+    """
+    Score multi-timeframe alignment — Callisto FX 2/3 Rule.
+
+    Callisto TRC Framework:
+    - Analyze Daily → 4H → 1H → 15M (top-down)
+    - Need 2 out of 3 higher TFs aligned for A+ bias
+    - 3+ TF alignment = maximum conviction entry
+    """
+    daily_trend = _trend_from_emas(df_daily) if df_daily is not None else "neutral"
     h4_trend = _trend_from_emas(df_h4)
     h1_trend = _trend_from_emas(df_h1) if df_h1 is not None else "neutral"
 
@@ -68,45 +87,53 @@ def _mtf_alignment(df_entry, df_h1, df_h4, direction: str) -> dict:
 
     aligned = 0
     opposed = 0
-
     target = "bull" if direction == "BUY" else "bear"
 
-    if target in h4_trend:
-        aligned += 1
-    elif ("bull" in h4_trend and target == "bear") or ("bear" in h4_trend and target == "bull"):
-        opposed += 1
-
-    if target in h1_trend:
-        aligned += 1
-    elif ("bull" in h1_trend and target == "bear") or ("bear" in h1_trend and target == "bull"):
-        opposed += 1
-
-    if entry_trend == target:
-        aligned += 1
-    elif entry_trend != "neutral" and entry_trend != target:
-        opposed += 1
+    # Check all 4 timeframes (Callisto top-down: Daily → 4H → 1H → Entry)
+    tf_results = {}
+    for name, trend in [("daily", daily_trend), ("h4", h4_trend),
+                        ("h1", h1_trend), ("entry", entry_trend)]:
+        if target in trend:
+            aligned += 1
+            tf_results[name] = "aligned"
+        elif ("bull" in trend and target == "bear") or ("bear" in trend and target == "bull"):
+            opposed += 1
+            tf_results[name] = "opposed"
+        else:
+            tf_results[name] = "neutral"
 
     h4_aligned = target in h4_trend
 
-    if aligned == 3:
-        score = 15
-    elif aligned == 2:
-        score = 8
-    elif aligned == 1 and opposed == 0:
-        score = 3
-    elif opposed >= 2:
-        score = -10
+    # Callisto 2/3 Rule: check higher TFs (Daily, 4H, 1H)
+    htf_aligned = sum(1 for k in ["daily", "h4", "h1"] if tf_results.get(k) == "aligned")
+    htf_opposed = sum(1 for k in ["daily", "h4", "h1"] if tf_results.get(k) == "opposed")
+
+    # Scoring based on Callisto framework
+    if aligned >= 4:
+        score = 18  # All 4 TFs aligned — maximum conviction
+    elif htf_aligned >= 3:
+        score = 15  # 3 HTFs aligned — A+ bias (Callisto rule)
+    elif htf_aligned >= 2:
+        score = 10  # 2/3 HTFs aligned — valid entry (Callisto 2/3 rule)
+    elif htf_aligned == 1 and htf_opposed == 0:
+        score = 3   # Only 1 HTF aligned, no opposition
+    elif htf_opposed >= 2:
+        score = -12  # 2+ HTFs opposed — DO NOT TRADE (Callisto rule)
     else:
         score = 0
 
     return {
         "score": score,
+        "daily_trend": daily_trend,
         "h4_trend": h4_trend,
         "h1_trend": h1_trend,
         "entry_trend": entry_trend,
         "h4_aligned": h4_aligned,
         "aligned": aligned,
         "opposed": opposed,
+        "htf_aligned": htf_aligned,
+        "tf_results": tf_results,
+        "callisto_2of3": htf_aligned >= 2,
     }
 
 
@@ -239,13 +266,19 @@ def _score_fvg(df: pd.DataFrame, price: float, direction: str) -> dict:
 # ════════════════════════════════════════════════════════════════
 # MODULE 4: Change of Character (CHoCH) Detection
 # ════════════════════════════════════════════════════════════════
-def _detect_choch(df: pd.DataFrame, lookback: int = 30) -> dict:
+def _detect_choch(df: pd.DataFrame, lookback: int = 30,
+                   require_body_close: bool = False) -> dict:
     """
     Detect Change of Character on given timeframe.
-    Bullish CHoCH: series of LL then breaks a LH (higher high after downtrend)
-    Bearish CHoCH: series of HH then breaks a HL (lower low after uptrend)
+
+    Callisto FX Rules:
+    - Bullish CHoCH: series of LL then breaks a LH (higher high after downtrend)
+    - Bearish CHoCH: series of HH then breaks a HL (lower low after uptrend)
+    - On 5M: BODY close required (wick-only break = INVALID)
+    - require_body_close=True enforces the Callisto body-close rule
     """
-    result = {"detected": False, "direction": None, "strength": 0, "price": 0}
+    result = {"detected": False, "direction": None, "strength": 0, "price": 0,
+              "body_confirmed": False}
     if df is None or len(df) < lookback:
         return result
 
@@ -255,21 +288,28 @@ def _detect_choch(df: pd.DataFrame, lookback: int = 30) -> dict:
 
     recent_highs = [h["price"] for h in highs[-5:]]
     recent_lows = [l["price"] for l in lows[-5:]]
+    last_close = float(df["close"].iloc[-1])
 
     # Bearish CHoCH: was making HH/HL, now broke below last HL
     if len(recent_highs) >= 3 and len(recent_lows) >= 3:
-        # Check if was in uptrend (higher highs)
         was_uptrend = recent_highs[-3] < recent_highs[-2]
-        # Current low broke below previous low
         broke_low = recent_lows[-1] < recent_lows[-2]
 
         if was_uptrend and broke_low:
+            # Callisto body-close check: the CLOSE must be below the level
+            body_confirmed = last_close < recent_lows[-2]
+            if require_body_close and not body_confirmed:
+                # Wick-only break — INVALID per Callisto FX
+                return result
+
             result = {
                 "detected": True,
                 "direction": "bearish",
                 "strength": abs(recent_lows[-1] - recent_lows[-2]),
                 "price": recent_lows[-1],
                 "prev_structure": "uptrend",
+                "body_confirmed": body_confirmed,
+                "choch_level": recent_lows[-2],  # Level to watch for retest
             }
             return result
 
@@ -279,12 +319,18 @@ def _detect_choch(df: pd.DataFrame, lookback: int = 30) -> dict:
         broke_high = recent_highs[-1] > recent_highs[-2]
 
         if was_downtrend and broke_high:
+            body_confirmed = last_close > recent_highs[-2]
+            if require_body_close and not body_confirmed:
+                return result
+
             result = {
                 "detected": True,
                 "direction": "bullish",
                 "strength": abs(recent_highs[-1] - recent_highs[-2]),
                 "price": recent_highs[-1],
                 "prev_structure": "downtrend",
+                "body_confirmed": body_confirmed,
+                "choch_level": recent_highs[-2],
             }
 
     return result
@@ -688,6 +734,398 @@ def _score_round_numbers(price: float) -> dict:
 
 
 # ════════════════════════════════════════════════════════════════
+# MODULE 21: TRC SCORE (Trend × Reversal × Continuation)
+# Callisto FX core framework — 90.7% tracked win rate
+# ════════════════════════════════════════════════════════════════
+def _score_trc(df_5m: pd.DataFrame, df_m15: pd.DataFrame, df_h1: pd.DataFrame,
+               df_h4: pd.DataFrame, direction: str, df_daily: pd.DataFrame = None) -> dict:
+    """
+    Score the T.R.C. (Trend × Reversal × Continuation) framework.
+
+    Step 1 (TREND): MTF analysis with 2/3 rule across 4H/1H/15M
+    Step 2 (REVERSAL): CHoCH on 5M with BODY close required
+    Step 3 (CONTINUATION): Retest of CHoCH level for entry
+
+    Score range: -10 to +20 (highest weight module — this IS the framework)
+    """
+    result = {"score": 0, "step1_trend": False, "step2_choch": False,
+              "step3_retest": False, "entry_type": None, "notes": []}
+
+    target = "bull" if direction == "BUY" else "bear"
+
+    # ── STEP 1: Trend (2/3 rule on higher TFs) ──
+    tf_aligned = 0
+    for df in [df_h4, df_h1, df_m15]:
+        if df is not None:
+            trend = _trend_from_emas(df)
+            if target in trend:
+                tf_aligned += 1
+
+    if tf_aligned >= 2:
+        result["step1_trend"] = True
+        result["score"] += 5
+        result["notes"].append(f"TRC Step 1 ✓: {tf_aligned}/3 TFs aligned ({target})")
+    else:
+        result["notes"].append(f"TRC Step 1 ✗: Only {tf_aligned}/3 TFs aligned")
+        return result  # Can't proceed without trend
+
+    # ── STEP 2: Reversal (CHoCH on 5M with body close) ──
+    if df_5m is not None and len(df_5m) >= 20:
+        choch_5m = _detect_choch(df_5m, lookback=30, require_body_close=True)
+        if choch_5m["detected"]:
+            choch_aligned = ((choch_5m["direction"] == "bullish" and direction == "BUY") or
+                           (choch_5m["direction"] == "bearish" and direction == "SELL"))
+            if choch_aligned:
+                result["step2_choch"] = True
+                result["score"] += 8
+                result["notes"].append(
+                    f"TRC Step 2 ✓: {choch_5m['direction']} CHoCH on 5M "
+                    f"(body confirmed={choch_5m['body_confirmed']})")
+
+                # ── STEP 3: Retest of CHoCH level ──
+                choch_level = choch_5m.get("choch_level", 0)
+                if choch_level > 0:
+                    price = float(df_5m["close"].iloc[-1])
+                    pip = 0.1
+                    tolerance = 15 * pip  # 15 pip tolerance for gold
+
+                    if direction == "BUY" and abs(price - choch_level) <= tolerance:
+                        result["step3_retest"] = True
+                        result["score"] += 7
+                        result["entry_type"] = "pro_trend_choch_retest"
+                        result["notes"].append(
+                            f"TRC Step 3 ✓: Price retesting CHoCH level ${choch_level:.2f}")
+                    elif direction == "SELL" and abs(price - choch_level) <= tolerance:
+                        result["step3_retest"] = True
+                        result["score"] += 7
+                        result["entry_type"] = "pro_trend_choch_retest"
+                        result["notes"].append(
+                            f"TRC Step 3 ✓: Price retesting CHoCH level ${choch_level:.2f}")
+                    else:
+                        result["notes"].append(
+                            f"TRC Step 3: Waiting for retest of ${choch_level:.2f} "
+                            f"(current ${price:.2f})")
+            else:
+                result["notes"].append("TRC Step 2 ✗: CHoCH opposes trade direction")
+        else:
+            result["notes"].append("TRC Step 2: No 5M CHoCH detected (waiting)")
+    else:
+        # Fallback to 15M CHoCH if no 5M data
+        choch_15m = _detect_choch(df_m15, lookback=30, require_body_close=True)
+        if choch_15m["detected"]:
+            choch_aligned = ((choch_15m["direction"] == "bullish" and direction == "BUY") or
+                           (choch_15m["direction"] == "bearish" and direction == "SELL"))
+            if choch_aligned:
+                result["step2_choch"] = True
+                result["score"] += 6  # Slightly less weight for 15M
+                result["notes"].append(f"TRC Step 2 ✓ (15M fallback): {choch_15m['direction']} CHoCH")
+
+    return result
+
+
+# ════════════════════════════════════════════════════════════════
+# MODULE 22: WCR RANGE DETECTION (William-Certified Range)
+# ════════════════════════════════════════════════════════════════
+def _score_wcr_range(df_h1: pd.DataFrame, df_h4: pd.DataFrame,
+                     direction: str) -> dict:
+    """
+    Score William-Certified Range strategy.
+
+    Rules:
+    - S&R with 2+ touches
+    - Range on 1H/4H/Daily, minimum 100-150 pips wide
+    - Buy at support, sell at resistance
+    - Swing trade focus
+
+    Score range: -5 to +12
+    """
+    result = {"score": 0, "range": None, "notes": []}
+
+    # Try H4 range first (higher TF = stronger range)
+    wcr = detect_wcr_range(df_h4, min_range_pips=100, min_touches=2)
+    source_tf = "4H"
+
+    if wcr is None:
+        wcr = detect_wcr_range(df_h1, min_range_pips=100, min_touches=2)
+        source_tf = "1H"
+
+    if wcr is None:
+        return result
+
+    result["range"] = wcr
+
+    if direction == "BUY" and wcr["near_support"]:
+        result["score"] = 12
+        result["notes"].append(
+            f"WCR BUY at support ${wcr['support']:.2f} "
+            f"({wcr['support_touches']} touches, {source_tf} range, "
+            f"{wcr['range_pips']:.0f} pips wide)")
+    elif direction == "SELL" and wcr["near_resistance"]:
+        result["score"] = 12
+        result["notes"].append(
+            f"WCR SELL at resistance ${wcr['resistance']:.2f} "
+            f"({wcr['resistance_touches']} touches, {source_tf} range, "
+            f"{wcr['range_pips']:.0f} pips wide)")
+    elif wcr["price_in_range"]:
+        result["score"] = 0
+        result["notes"].append(
+            f"WCR range detected ({source_tf}: ${wcr['support']:.2f}-${wcr['resistance']:.2f}) "
+            f"but price is mid-range — wait for edges")
+    else:
+        # Price outside range — potential breakout
+        result["score"] = -3
+        result["notes"].append(
+            f"Price outside WCR range — breakout or invalidated range")
+
+    return result
+
+
+# ════════════════════════════════════════════════════════════════
+# MODULE 23: BREAKER BLOCK + SMA44 STRATEGY
+# Callisto FX BB+Indicator framework
+# ════════════════════════════════════════════════════════════════
+def _score_breaker_block(df: pd.DataFrame, price: float, direction: str) -> dict:
+    """
+    Score Breaker Block + SMA44 strategy (Callisto FX).
+
+    Rules:
+    - Breaker Block = failed order block that flipped
+    - BUY: break lower high + price above SMA44 + breaker block retest
+    - SELL: break higher low + price below SMA44 + breaker block retest
+    - Strict 1:2 R:R
+    - "X" sign during retest = invalidation
+
+    Score range: -5 to +12
+    """
+    result = {"score": 0, "breaker": None, "sma44_aligned": False, "notes": []}
+
+    if df is None or len(df) < 44:
+        return result
+
+    breakers = detect_breaker_blocks(df, lookback=50)
+    sma44 = float(df["sma44"].iloc[-1]) if "sma44" in df.columns else None
+
+    if sma44 is None:
+        return result
+
+    # SMA44 alignment check
+    sma44_bullish = price > sma44
+    sma44_bearish = price < sma44
+    result["sma44_aligned"] = (
+        (direction == "BUY" and sma44_bullish) or
+        (direction == "SELL" and sma44_bearish)
+    )
+
+    if not result["sma44_aligned"]:
+        result["score"] = -3
+        result["notes"].append(
+            f"BB Strategy: Price {'above' if sma44_bullish else 'below'} SMA44 "
+            f"— conflicts with {direction}")
+        return result
+
+    # Find relevant breaker block near price
+    pip = 0.1
+    atr = float(df["atr14"].iloc[-1]) if "atr14" in df.columns else 1.0
+    tolerance = atr * 0.5
+
+    for bb in reversed(breakers):
+        if bb["direction"] != direction:
+            continue
+
+        # Check if price is near/at the breaker block zone for retest
+        near_bb = (bb["bottom"] - tolerance <= price <= bb["top"] + tolerance)
+
+        if near_bb:
+            result["score"] = 10
+            result["breaker"] = bb
+            result["notes"].append(
+                f"BB+SMA44 CONFIRMED: {bb['type']} retest at "
+                f"${bb['bottom']:.2f}-${bb['top']:.2f}, "
+                f"price {'above' if sma44_bullish else 'below'} SMA44 "
+                f"(${sma44:.2f})")
+
+            # Extra points if SMA44 and breaker align tightly
+            if abs(sma44 - (bb["top"] + bb["bottom"]) / 2) < tolerance:
+                result["score"] += 2
+                result["notes"].append("BB+SMA44 confluence — high probability zone")
+
+            return result
+
+    # SMA44 aligned but no breaker block nearby
+    if result["sma44_aligned"]:
+        result["score"] = 2
+        result["notes"].append(
+            f"SMA44 aligned ({direction}) but no breaker block at current price")
+
+    return result
+
+
+# ════════════════════════════════════════════════════════════════
+# MODULE 24: PREMIUM/DISCOUNT ARRAY
+# Callisto FX ICT concept
+# ════════════════════════════════════════════════════════════════
+def _score_premium_discount(df_h4: pd.DataFrame, direction: str) -> dict:
+    """
+    Score Premium/Discount Array (ICT concept from Callisto FX).
+
+    Below Fib 50% = Discount zone → look for buys
+    Above Fib 50% = Premium zone → look for sells
+
+    Score range: -8 to +10
+    """
+    result = {"score": 0, "zone": None, "notes": []}
+
+    pd_data = detect_premium_discount(df_h4)
+    if pd_data is None:
+        return result
+
+    result["zone"] = pd_data
+
+    zone = pd_data["zone"]
+    bias = pd_data["bias"]
+    pct = pd_data["position_pct"]
+
+    if bias == direction:
+        if "deep" in zone:
+            result["score"] = 10
+            result["notes"].append(
+                f"DEEP {zone.upper()}: Price at {pct:.0f}% of swing range — "
+                f"institutional {direction} zone")
+        else:
+            result["score"] = 6
+            result["notes"].append(
+                f"{zone.upper()}: Price at {pct:.0f}% — favorable for {direction}")
+    elif bias != "NEUTRAL" and bias != direction:
+        result["score"] = -8
+        result["notes"].append(
+            f"WARNING: Price in {zone.upper()} ({pct:.0f}%) — "
+            f"unfavorable for {direction} (smart money sells in premium, buys in discount)")
+    else:
+        result["notes"].append(
+            f"Price near equilibrium ({pct:.0f}%) — no premium/discount edge")
+
+    return result
+
+
+# ════════════════════════════════════════════════════════════════
+# MODULE 25: EXPANDED CANDLESTICK PATTERNS
+# Full Callisto FX pattern set
+# ════════════════════════════════════════════════════════════════
+def _score_candlestick_patterns(df: pd.DataFrame, direction: str) -> dict:
+    """
+    Score expanded candlestick patterns from Callisto FX.
+
+    Includes: Doji, Hammer, Shooting Star, Engulfing, Tweezer,
+    Morning/Evening Star patterns.
+
+    Score range: -3 to +8
+    """
+    result = {"score": 0, "patterns": [], "notes": []}
+
+    patterns = detect_candlestick_patterns(df, lookback=5)
+    if not patterns:
+        return result
+
+    # Only care about the most recent pattern at the last few candles
+    recent = [p for p in patterns if p["index"] >= len(df) - 3]
+    if not recent:
+        return result
+
+    best_score = 0
+    for p in recent:
+        aligned = ((p["bias"] == "bullish" and direction == "BUY") or
+                  (p["bias"] == "bearish" and direction == "SELL"))
+        opposed = ((p["bias"] == "bullish" and direction == "SELL") or
+                  (p["bias"] == "bearish" and direction == "BUY"))
+
+        if aligned:
+            pts = min(8, p["strength"] * 2 + 2)
+            if pts > best_score:
+                best_score = pts
+                result["patterns"].append(p["pattern"])
+                result["notes"].append(
+                    f"Candlestick: {p['pattern'].replace('_', ' ').title()} "
+                    f"confirms {direction}")
+        elif opposed:
+            pts = -(p["strength"] + 1)
+            if pts < -best_score:
+                best_score = pts
+                result["notes"].append(
+                    f"Candlestick warning: {p['pattern'].replace('_', ' ').title()} "
+                    f"opposes {direction}")
+
+    result["score"] = max(-3, min(8, best_score))
+    return result
+
+
+# ════════════════════════════════════════════════════════════════
+# MODULE 26: CALLISTO RISK ENFORCER
+# Session lock + max 2 losses/day + counter-trend rules
+# ════════════════════════════════════════════════════════════════
+def _score_risk_enforcer(utc_hour: int, direction: str,
+                         daily_losses: int = 0,
+                         is_counter_trend: bool = False) -> dict:
+    """
+    Callisto FX Risk Management Enforcer.
+
+    Non-negotiable rules:
+    - Max 2 losses per day → no more trading
+    - London + NY sessions only (no Asian trading)
+    - Counter-trend requires CHoCH retest + BOS (extra confirmation)
+    - SL to BE at 10-20 pips profit
+    - No FOMO entries
+    - Avoid high-impact news (handled by Module 19)
+
+    Score range: -20 to +5
+    """
+    result = {"score": 0, "blocked": False, "reason": None, "notes": []}
+
+    # ── Max 2 losses/day hard block ──
+    if daily_losses >= 2:
+        result["score"] = -20
+        result["blocked"] = True
+        result["reason"] = "max_daily_losses"
+        result["notes"].append(
+            f"BLOCKED: {daily_losses} losses today — Callisto FX max 2 losses/day rule. "
+            f"STOP TRADING. Come back tomorrow.")
+        return result
+
+    # ── Session enforcement: London + NY only ──
+    # London: 07:00-16:00 UTC, NY: 12:00-21:00 UTC
+    in_london = 7 <= utc_hour < 16
+    in_ny = 12 <= utc_hour < 21
+
+    if not in_london and not in_ny:
+        result["score"] = -15
+        result["blocked"] = True
+        result["reason"] = "outside_session"
+        result["notes"].append(
+            f"BLOCKED: Current hour {utc_hour}:00 UTC — outside London/NY sessions. "
+            f"Callisto FX: Trade London and NY sessions ONLY.")
+        return result
+
+    # Bonus for overlap session (highest probability)
+    if in_london and in_ny:
+        result["score"] += 3
+        result["notes"].append("London/NY overlap — highest probability window")
+    elif in_london:
+        result["score"] += 2
+        result["notes"].append("London session active")
+    elif in_ny:
+        result["score"] += 2
+        result["notes"].append("New York session active")
+
+    # ── Counter-trend penalty ──
+    if is_counter_trend:
+        result["score"] -= 5
+        result["notes"].append(
+            "Counter-trend trade — Callisto FX requires CHoCH retest + BOS "
+            "for counter-trend entries. Extra confirmation needed.")
+
+    return result
+
+
+# ════════════════════════════════════════════════════════════════
 # MAIN SCORING FUNCTION
 # ════════════════════════════════════════════════════════════════
 def gold_engine_score(
@@ -698,26 +1136,66 @@ def gold_engine_score(
     utc_hour: int = None,
     events: list = None,
     td_api_key: str = "",
+    df_5m: pd.DataFrame = None,
+    df_daily: pd.DataFrame = None,
+    daily_losses: int = 0,
 ) -> dict:
     """
-    Run all 20 modules and produce final score + grade.
+    Gold Engine V6 Callisto — Run all 26 modules and produce final score + grade.
 
-    Modules 1-17: Pure technical (original Gold Engine V4)
-    Module 18: COT Data + DXY Correlation (institutional positioning)
-    Module 19: Smart News Filter (event danger detection)
-    Module 20: Volume Confirmation (breakout/fakeout detection)
+    Modules 1-17: Pure technical (Gold Engine V4 foundation)
+    Module 18-20: Institutional edge (V5)
+    Module 21: TRC Score (Callisto FX core framework)
+    Module 22: WCR Range Detection (William-Certified Range)
+    Module 23: Breaker Block + SMA44 Strategy
+    Module 24: Premium/Discount Array (ICT Fib 50%)
+    Module 25: Expanded Candlestick Patterns
+    Module 26: Callisto Risk Enforcer (session + loss limits)
 
     Returns dict with:
         score, grade, confidence, direction, modules (detail per module),
-        h4_aligned, confirmations, contradictions, blocked, institutional_bias
+        h4_aligned, confirmations, contradictions, blocked, institutional_bias,
+        trc_setup, callisto_grade
     """
     if utc_hour is None:
         utc_hour = datetime.now(timezone.utc).hour
 
     price = float(df_m15["close"].iloc[-1]) if df_m15 is not None and len(df_m15) > 0 else 0
 
-    # Run all modules
-    m1 = _mtf_alignment(df_m15, df_h1, df_h4, direction)
+    # ── CALLISTO RISK ENFORCER (Module 26) — Check FIRST ──
+    # Determine if this is a counter-trend trade
+    h4_trend = _trend_from_emas(df_h4)
+    target = "bull" if direction == "BUY" else "bear"
+    is_counter_trend = (target not in h4_trend) and h4_trend != "neutral"
+
+    m26 = _score_risk_enforcer(utc_hour, direction, daily_losses, is_counter_trend)
+
+    # If risk enforcer blocks, return immediately
+    if m26.get("blocked"):
+        return {
+            "score": 0,
+            "raw_score": 0,
+            "technical_score": 0,
+            "institutional_score": 0,
+            "callisto_score": m26["score"],
+            "grade": "D",
+            "confidence": "BLOCKED",
+            "direction": direction,
+            "price": price,
+            "h4_aligned": False,
+            "confirmations": 0,
+            "contradictions": 0,
+            "news_blocked": False,
+            "risk_blocked": True,
+            "risk_reason": m26.get("reason"),
+            "institutional_bias": "NEUTRAL",
+            "trc_setup": False,
+            "callisto_grade": "BLOCKED",
+            "modules": {"risk_enforcer": m26},
+        }
+
+    # ── Run original V5 modules (1-20) ──
+    m1 = _mtf_alignment(df_m15, df_h1, df_h4, direction, df_daily)
     m2 = _score_sd_zone(_detect_sd_zones(df_h4), price, direction)
     m3 = _score_fvg(df_m15, price, direction)
     m4 = _score_choch(df_h1, direction)
@@ -737,19 +1215,21 @@ def gold_engine_score(
     m16 = _score_bb_squeeze(df_m15, direction)
     m17 = _score_round_numbers(price)
 
-    # ── NEW: Institutional Modules (18-20) ──
-    # Module 18: COT + DXY
+    # Institutional Modules (18-20)
     cot_data = _cot.fetch_cot_data()
     dxy_data = _cot.fetch_dxy_trend(td_api_key)
     m18 = score_cot_dxy(direction, cot_data, dxy_data)
-
-    # Module 19: Smart News Filter
     m19 = score_news_filter(events or [], direction)
-
-    # Module 20: Volume Confirmation
     m20 = score_volume(df_m15, direction)
 
-    # Sum scores (technical + institutional)
+    # ── NEW: Callisto FX Modules (21-25) ──
+    m21 = _score_trc(df_5m, df_m15, df_h1, df_h4, direction, df_daily)
+    m22 = _score_wcr_range(df_h1, df_h4, direction)
+    m23 = _score_breaker_block(df_m15, price, direction)
+    m24 = _score_premium_discount(df_h4, direction)
+    m25 = _score_candlestick_patterns(df_m15, direction)
+
+    # ── Sum scores ──
     technical_score = sum([
         m1["score"], m2["score"], m3["score"], m4["score"],
         m5["score"], m6["score"], m7["score"], m8["score"],
@@ -758,17 +1238,19 @@ def gold_engine_score(
         m17["score"],
     ])
     institutional_score = m18["score"] + m19["score"] + m20["score"]
-    raw_score = technical_score + institutional_score
+    callisto_score = (m21["score"] + m22["score"] + m23["score"] +
+                      m24["score"] + m25["score"] + m26["score"])
+    raw_score = technical_score + institutional_score + callisto_score
 
     # Normalize to 0-100 range
-    # Max possible positive: ~167 (140 tech + 27 institutional)
-    # Adjusted multiplier to account for wider range
-    score = max(0, min(100, int(raw_score * 0.6 + 30)))
+    # Max possible: ~220 (140 tech + 27 institutional + ~57 callisto)
+    score = max(0, min(100, int(raw_score * 0.45 + 25)))
 
     # Count confirmations and contradictions
-    confirmations = sum(1 for m in [m1, m2, m3, m4, m5, m6, m7, m8, m9, m11, m12, m13, m14, m15, m16, m17, m18, m20]
-                       if m["score"] > 0)
-    contradictions = sum(1 for m in [m1, m4, m8, m10, m11, m18, m19, m20]
+    all_modules = [m1, m2, m3, m4, m5, m6, m7, m8, m9, m11, m12, m13,
+                   m14, m15, m16, m17, m18, m20, m21, m22, m23, m24, m25]
+    confirmations = sum(1 for m in all_modules if m["score"] > 0)
+    contradictions = sum(1 for m in [m1, m4, m8, m10, m11, m18, m19, m20, m24, m26]
                         if m["score"] < 0)
 
     # Hard caps
@@ -776,13 +1258,50 @@ def gold_engine_score(
     overextended = m10.get("overextended", False)
     news_blocked = m19.get("danger_level") == "BLOCKED"
 
-    # If news filter says BLOCKED, cap grade to D regardless of score
+    # ── TRC setup quality assessment ──
+    trc_setup = m21.get("step1_trend") and m21.get("step2_choch")
+    trc_full = trc_setup and m21.get("step3_retest")
+    callisto_2of3 = m1.get("callisto_2of3", False)
+
+    # ── Grade assignment with Callisto framework priority ──
     if news_blocked:
         grade = "D"
+    elif trc_full and callisto_2of3:
+        # Full TRC setup with 2/3 HTF alignment — highest conviction
+        if score >= 80:
+            grade = "A+"
+        elif score >= 70:
+            grade = "A"
+        else:
+            grade = "B"
+    elif trc_setup and callisto_2of3:
+        # TRC step 1+2 but waiting for retest
+        if score >= 85:
+            grade = "A"
+        elif score >= 70:
+            grade = "B"
+        else:
+            grade = "C"
     else:
         grade = _assign_grade(score, h4_aligned, overextended, confirmations, contradictions)
 
-    confidence = _assign_confidence(score, grade, h4_aligned, m5.get("killzone", ""), m1.get("h4_trend", ""))
+    # ── Callisto-specific grade (independent assessment) ──
+    if trc_full and m24.get("score", 0) >= 6:
+        callisto_grade = "SNIPER"
+    elif trc_full:
+        callisto_grade = "A+"
+    elif trc_setup:
+        callisto_grade = "A"
+    elif callisto_2of3:
+        callisto_grade = "B"
+    else:
+        callisto_grade = "C"
+
+    confidence = _assign_confidence_v6(
+        score, grade, h4_aligned,
+        m5.get("killzone", ""), m1.get("h4_trend", ""),
+        trc_full, callisto_2of3
+    )
 
     # Determine institutional bias
     inst_bias = "NEUTRAL"
@@ -812,6 +1331,12 @@ def gold_engine_score(
         "cot_dxy": m18,
         "news_filter": m19,
         "volume": m20,
+        "trc": m21,
+        "wcr_range": m22,
+        "breaker_block": m23,
+        "premium_discount": m24,
+        "candlestick_patterns": m25,
+        "risk_enforcer": m26,
     }
 
     return {
@@ -819,7 +1344,9 @@ def gold_engine_score(
         "raw_score": raw_score,
         "technical_score": technical_score,
         "institutional_score": institutional_score,
+        "callisto_score": callisto_score,
         "grade": grade,
+        "callisto_grade": callisto_grade,
         "confidence": confidence,
         "direction": direction,
         "price": price,
@@ -827,7 +1354,11 @@ def gold_engine_score(
         "confirmations": confirmations,
         "contradictions": contradictions,
         "news_blocked": news_blocked,
+        "risk_blocked": False,
         "institutional_bias": inst_bias,
+        "trc_setup": trc_setup,
+        "trc_full": trc_full,
+        "callisto_2of3": callisto_2of3,
         "modules": modules,
     }
 
@@ -864,7 +1395,7 @@ def _assign_grade(score: int, h4_aligned: bool, overextended: bool,
 
 def _assign_confidence(score: int, grade: str, h4_aligned: bool,
                        killzone: str, h4_trend: str) -> str:
-    """Assign confidence level."""
+    """Assign confidence level (legacy V5 — kept for backward compat)."""
     points = 0
     if score >= 95:
         points += 4
@@ -887,6 +1418,52 @@ def _assign_confidence(score: int, grade: str, h4_aligned: bool,
     elif points >= 6:
         return "HIGH"
     return "MEDIUM"
+
+
+def _assign_confidence_v6(score: int, grade: str, h4_aligned: bool,
+                          killzone: str, h4_trend: str,
+                          trc_full: bool = False,
+                          callisto_2of3: bool = False) -> str:
+    """
+    Assign confidence level — V6 Callisto edition.
+    TRC full setup + premium/discount = SNIPER
+    TRC setup + 2/3 rule = HIGH
+    Otherwise fallback to V5 logic.
+    """
+    points = 0
+
+    # Callisto TRC bonuses (highest weight)
+    if trc_full:
+        points += 5
+    if callisto_2of3:
+        points += 2
+
+    # Score-based
+    if score >= 92:
+        points += 4
+    elif score >= 82:
+        points += 2
+
+    # Grade-based
+    if grade == "A+":
+        points += 3
+    elif grade == "A":
+        points += 2
+
+    # Session quality
+    if h4_aligned and killzone in ("London_Open", "NY_Open", "LN_Overlap"):
+        points += 2
+
+    if h4_trend in ("bull", "bear"):
+        points += 1
+
+    if points >= 12:
+        return "SNIPER"
+    elif points >= 8:
+        return "HIGH"
+    elif points >= 4:
+        return "MEDIUM"
+    return "LOW"
 
 
 # ════════════════════════════════════════════════════════════════

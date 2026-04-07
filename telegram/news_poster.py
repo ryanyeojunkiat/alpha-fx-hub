@@ -767,17 +767,24 @@ class NewsPoster:
             time.sleep(self.alert_check_interval)
 
     def _weekend_loop(self):
-        """Post weekend prediction on Saturday morning (once per weekend)."""
+        """Post weekend prediction once per weekend (Sat or Sun)."""
         time.sleep(120)  # Wait 2 min before first check
 
         while self._running:
             try:
                 now = datetime.now(timezone.utc)
-                # Post on Saturday between 6-10 UTC (once)
-                is_saturday = now.weekday() == 5  # 5 = Saturday
-                is_morning = 6 <= now.hour <= 10
+                day = now.weekday()  # 5=Sat, 6=Sun
 
-                if is_saturday and is_morning and not self._weekend_posted:
+                # Post on Saturday (6-10 UTC) OR Sunday anytime if missed Saturday
+                is_weekend = day in (5, 6)
+                # Saturday: prefer morning window. Sunday: anytime (catch-up)
+                should_post = False
+                if day == 5 and 6 <= now.hour <= 10:
+                    should_post = True
+                elif day == 6 and now.hour < 22:  # Sunday before market open
+                    should_post = True
+
+                if is_weekend and should_post and not self._weekend_posted:
                     events = fetch_economic_calendar(api_key=self.te_api_key)
                     price_data = self._get_price_data()
 
@@ -788,9 +795,16 @@ class NewsPoster:
                         if success:
                             self._weekend_posted = True
                             logger.info("Weekend prediction posted to private channel")
+                    else:
+                        # No price data available, still post with empty levels
+                        msg = build_weekend_prediction({}, events, self.td_api_key)
+                        success = self.notifier.broadcast(msg)
+                        if success:
+                            self._weekend_posted = True
+                            logger.info("Weekend prediction posted (no price data)")
 
                 # Reset flag on Monday
-                if now.weekday() == 0:  # Monday
+                if day == 0:  # Monday
                     self._weekend_posted = False
 
             except Exception as e:

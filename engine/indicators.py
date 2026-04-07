@@ -25,6 +25,12 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
         else:
             df[col] = c
 
+    # ── SMA 44 (Callisto FX BB+Indicator Strategy) ──
+    if len(c) >= 44:
+        df["sma44"] = c.rolling(44).mean()
+    else:
+        df["sma44"] = c
+
     # ── ATR (14) ──
     tr = pd.concat([
         h - l,
@@ -220,3 +226,295 @@ def bb_squeeze_active(df: pd.DataFrame) -> bool:
     current_width = float(df["bb_width"].iloc[-1])
     avg_width = float(df["bb_width"].iloc[-20:].mean())
     return current_width < avg_width * 0.6
+
+
+# ════════════════════════════════════════════════════════════════
+# CALLISTO FX — EXPANDED CANDLESTICK PATTERN RECOGNITION
+# ════════════════════════════════════════════════════════════════
+def detect_candlestick_patterns(df: pd.DataFrame, lookback: int = 5) -> List[dict]:
+    """
+    Detect all Callisto FX candlestick patterns:
+    Doji, Shooting Star, Hammer, Engulfing, Tweezer Top/Bottom,
+    Morning/Evening Star, Double Top/Bottom, Head & Shoulders (simplified).
+    Returns list of detected patterns with direction bias.
+    """
+    patterns = []
+    if df is None or len(df) < max(lookback, 3):
+        return patterns
+
+    o = df["open"].astype(float)
+    c = df["close"].astype(float)
+    h = df["high"].astype(float)
+    l = df["low"].astype(float)
+
+    for i in range(max(2, len(df) - lookback), len(df)):
+        body = abs(c.iloc[i] - o.iloc[i])
+        upper_wick = h.iloc[i] - max(c.iloc[i], o.iloc[i])
+        lower_wick = min(c.iloc[i], o.iloc[i]) - l.iloc[i]
+        total_range = h.iloc[i] - l.iloc[i]
+        if total_range == 0:
+            continue
+
+        # ── Doji: body < 10% of range ──
+        if body < total_range * 0.10:
+            patterns.append({"pattern": "doji", "index": i, "bias": "neutral",
+                           "strength": 1})
+
+        # ── Hammer: small body at top, long lower wick >=2x body ──
+        if lower_wick >= body * 2 and upper_wick < body * 0.5 and body > 0:
+            patterns.append({"pattern": "hammer", "index": i, "bias": "bullish",
+                           "strength": 2})
+
+        # ── Shooting Star: small body at bottom, long upper wick >=2x body ──
+        if upper_wick >= body * 2 and lower_wick < body * 0.5 and body > 0:
+            patterns.append({"pattern": "shooting_star", "index": i, "bias": "bearish",
+                           "strength": 2})
+
+        # Multi-candle patterns (need i >= 1)
+        if i >= 1:
+            prev_body = abs(c.iloc[i-1] - o.iloc[i-1])
+            prev_bullish = c.iloc[i-1] > o.iloc[i-1]
+            curr_bullish = c.iloc[i] > o.iloc[i]
+
+            # ── Bullish Engulfing ──
+            if not prev_bullish and curr_bullish:
+                if c.iloc[i] > o.iloc[i-1] and o.iloc[i] < c.iloc[i-1]:
+                    patterns.append({"pattern": "bullish_engulfing", "index": i,
+                                   "bias": "bullish", "strength": 3})
+
+            # ── Bearish Engulfing ──
+            if prev_bullish and not curr_bullish:
+                if c.iloc[i] < o.iloc[i-1] and o.iloc[i] > c.iloc[i-1]:
+                    patterns.append({"pattern": "bearish_engulfing", "index": i,
+                                   "bias": "bearish", "strength": 3})
+
+            # ── Tweezer Top: 2 candles, similar highs, first bull then bear ──
+            if prev_bullish and not curr_bullish:
+                if abs(h.iloc[i] - h.iloc[i-1]) < total_range * 0.05:
+                    patterns.append({"pattern": "tweezer_top", "index": i,
+                                   "bias": "bearish", "strength": 2})
+
+            # ── Tweezer Bottom: 2 candles, similar lows, first bear then bull ──
+            if not prev_bullish and curr_bullish:
+                if abs(l.iloc[i] - l.iloc[i-1]) < total_range * 0.05:
+                    patterns.append({"pattern": "tweezer_bottom", "index": i,
+                                   "bias": "bullish", "strength": 2})
+
+        # 3-candle patterns (need i >= 2)
+        if i >= 2:
+            first_bullish = c.iloc[i-2] > o.iloc[i-2]
+            mid_body = abs(c.iloc[i-1] - o.iloc[i-1])
+            mid_range = h.iloc[i-1] - l.iloc[i-1]
+
+            # ── Morning Star: bearish, small body/doji, bullish ──
+            if not first_bullish and mid_body < mid_range * 0.3 and c.iloc[i] > o.iloc[i]:
+                if c.iloc[i] > (o.iloc[i-2] + c.iloc[i-2]) / 2:
+                    patterns.append({"pattern": "morning_star", "index": i,
+                                   "bias": "bullish", "strength": 3})
+
+            # ── Evening Star: bullish, small body/doji, bearish ──
+            if first_bullish and mid_body < mid_range * 0.3 and c.iloc[i] < o.iloc[i]:
+                if c.iloc[i] < (o.iloc[i-2] + c.iloc[i-2]) / 2:
+                    patterns.append({"pattern": "evening_star", "index": i,
+                                   "bias": "bearish", "strength": 3})
+
+    return patterns
+
+
+def detect_breaker_blocks(df: pd.DataFrame, lookback: int = 50) -> List[dict]:
+    """
+    Detect Breaker Blocks (Callisto FX ICT concept).
+    A breaker block is a failed order block — when an OB fails and price
+    breaks through it, the OB flips to become a breaker block
+    (resistance becomes support or vice versa).
+
+    Logic:
+    1. Find order blocks (last opposing candle before impulse move)
+    2. Check if price subsequently broke through the OB
+    3. The broken OB zone becomes a breaker block for retest entries
+    """
+    breakers = []
+    if df is None or len(df) < 20:
+        return breakers
+
+    o = df["open"].astype(float)
+    c = df["close"].astype(float)
+    h = df["high"].astype(float)
+    l = df["low"].astype(float)
+    atr = float(df["atr14"].iloc[-1]) if "atr14" in df.columns else 1.0
+
+    start = max(2, len(df) - lookback)
+
+    for i in range(start, len(df) - 3):
+        bar_open = o.iloc[i]
+        bar_close = c.iloc[i]
+        bar_body = abs(bar_close - bar_open)
+
+        if bar_body < atr * 0.3:
+            continue
+
+        # Check for impulse move after this candle
+        next_move = abs(c.iloc[i+1] - c.iloc[i])
+        if next_move < atr * 0.8:
+            continue
+
+        # Bullish OB that later FAILS (breaks below) → Bearish Breaker Block
+        if bar_close > bar_open:  # Bullish candle (potential bullish OB)
+            ob_bottom = bar_open
+            ob_top = bar_close
+            # Check if price later broke below this OB
+            for j in range(i + 2, min(i + 20, len(df))):
+                if c.iloc[j] < ob_bottom:
+                    # OB failed — this is now a bearish breaker block
+                    # Price retesting this zone from below = sell opportunity
+                    breakers.append({
+                        "type": "bearish_breaker",
+                        "top": ob_top,
+                        "bottom": ob_bottom,
+                        "created_index": i,
+                        "broken_index": j,
+                        "direction": "SELL",
+                    })
+                    break
+
+        # Bearish OB that later FAILS (breaks above) → Bullish Breaker Block
+        elif bar_close < bar_open:  # Bearish candle (potential bearish OB)
+            ob_bottom = bar_close
+            ob_top = bar_open
+            # Check if price later broke above this OB
+            for j in range(i + 2, min(i + 20, len(df))):
+                if c.iloc[j] > ob_top:
+                    # OB failed — this is now a bullish breaker block
+                    breakers.append({
+                        "type": "bullish_breaker",
+                        "top": ob_top,
+                        "bottom": ob_bottom,
+                        "created_index": i,
+                        "broken_index": j,
+                        "direction": "BUY",
+                    })
+                    break
+
+    return breakers
+
+
+def detect_wcr_range(df: pd.DataFrame, min_range_pips: float = 100,
+                     min_touches: int = 2) -> Optional[dict]:
+    """
+    Detect William-Certified Range (Callisto FX WCR Strategy).
+    S&R with 2+ touches, minimum 100-150 pips wide on 1H/4H/Daily.
+    Returns the current range if detected, else None.
+    """
+    if df is None or len(df) < 30:
+        return None
+
+    pip = 0.1
+    highs, lows = find_swing_points(df, left=5, right=5)
+
+    if len(highs) < 2 or len(lows) < 2:
+        return None
+
+    # Find the most prominent resistance (cluster of highs)
+    high_prices = [h["price"] for h in highs[-8:]]
+    low_prices = [l["price"] for l in lows[-8:]]
+
+    # Cluster highs within tolerance
+    tolerance = 30 * pip  # 30 pips clustering for gold
+    resistance = _find_level_cluster(high_prices, tolerance)
+    support = _find_level_cluster(low_prices, tolerance)
+
+    if resistance is None or support is None:
+        return None
+
+    range_pips = (resistance["level"] - support["level"]) / pip
+
+    if range_pips < min_range_pips:
+        return None
+
+    if resistance["touches"] < min_touches or support["touches"] < min_touches:
+        return None
+
+    price = float(df["close"].iloc[-1])
+
+    return {
+        "resistance": resistance["level"],
+        "support": support["level"],
+        "range_pips": round(range_pips, 1),
+        "resistance_touches": resistance["touches"],
+        "support_touches": support["touches"],
+        "price_in_range": support["level"] <= price <= resistance["level"],
+        "near_support": abs(price - support["level"]) < tolerance,
+        "near_resistance": abs(price - resistance["level"]) < tolerance,
+    }
+
+
+def _find_level_cluster(prices: List[float], tolerance: float) -> Optional[dict]:
+    """Find the most-touched price level within a tolerance band."""
+    if not prices:
+        return None
+
+    best_level = None
+    best_count = 0
+
+    for ref in prices:
+        count = sum(1 for p in prices if abs(p - ref) <= tolerance)
+        if count > best_count:
+            best_count = count
+            avg_price = np.mean([p for p in prices if abs(p - ref) <= tolerance])
+            best_level = {"level": round(avg_price, 2), "touches": count}
+
+    return best_level
+
+
+def detect_premium_discount(df: pd.DataFrame) -> Optional[dict]:
+    """
+    Detect Premium/Discount Array (Callisto FX ICT concept).
+    Uses Fibonacci 50% equilibrium:
+    - Below 50% = Discount zone (look for buys)
+    - Above 50% = Premium zone (look for sells)
+    Returns zone classification and Fib levels.
+    """
+    if df is None or len(df) < 30:
+        return None
+
+    highs, lows = find_swing_points(df, left=5, right=5)
+    if not highs or not lows:
+        return None
+
+    # Use recent swing structure
+    swing_high = max(h["price"] for h in highs[-5:])
+    swing_low = min(l["price"] for l in lows[-5:])
+    price = float(df["close"].iloc[-1])
+    swing_range = swing_high - swing_low
+
+    if swing_range <= 0:
+        return None
+
+    equilibrium = swing_low + swing_range * 0.5
+    position_pct = (price - swing_low) / swing_range * 100
+
+    if position_pct <= 30:
+        zone = "deep_discount"
+        bias = "BUY"
+    elif position_pct <= 50:
+        zone = "discount"
+        bias = "BUY"
+    elif position_pct >= 70:
+        zone = "deep_premium"
+        bias = "SELL"
+    elif position_pct >= 50:
+        zone = "premium"
+        bias = "SELL"
+    else:
+        zone = "equilibrium"
+        bias = "NEUTRAL"
+
+    return {
+        "zone": zone,
+        "bias": bias,
+        "position_pct": round(position_pct, 1),
+        "equilibrium": round(equilibrium, 2),
+        "swing_high": swing_high,
+        "swing_low": swing_low,
+        "price": price,
+    }

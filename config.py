@@ -26,7 +26,7 @@ def _get_secret(key: str, default: str = "") -> str:
 PLATFORM_NAME = "Alpha FX Hub"
 ENGINE_NAME = "Alpha FX Engine"
 PLATFORM_TAG = "alpha_fx_hub"
-VERSION = "2.0.0"
+VERSION = "3.1.0"  # V6 Callisto Optimized — 200-pip SL, A+ Only
 
 # ── Telegram Configuration ───────────────────────────────────
 # Bot: Alpha FX Pilot @alphaedge_gold_bot
@@ -78,13 +78,167 @@ FP_MARKETS_CODE = _get_secret("FP_MARKETS_CODE", "M4-66209")
 SCAN_INTERVAL = int(_get_secret("SCAN_INTERVAL_SECONDS", "60"))
 
 # ═════════════════════════════════════════════════════════════
-# XAUUSD CONFIGURATION
+# MULTI-SYMBOL CONFIGURATION
 # ═════════════════════════════════════════════════════════════
-SYMBOL = "XAUUSD"
-SYMBOL_PIP = 0.1          # Gold: 1 pip = $0.10
+SYMBOL = "XAUUSD"          # Primary symbol (gold)
+SYMBOL_PIP = 0.1           # Gold: 1 pip = $0.10
 SYMBOL_DEC = 2             # 2 decimal places
 SYMBOL_SUFFIX = ".r"       # Broker suffix (FP Markets)
 PIP_VALUE_PER_LOT = 10.0   # USD per pip per standard lot
+
+# ── All Supported Symbols ───────────────────────────────────
+# Each symbol has: twelve_data_code, pip_size, pip_value_per_lot, decimals, sl_pips, tp_multipliers
+SYMBOLS = {
+    "XAUUSD": {
+        "name": "Gold",
+        "td_code": "XAU/USD",       # Twelve Data symbol
+        "mt5_code": "XAUUSD",       # MetaAPI/MT5 symbol
+        "pip": 0.1,                  # 1 pip = $0.10
+        "pip_value": 10.0,           # $ per pip per 1.0 lot
+        "decimals": 2,
+        "sl_pips": 200,              # Optimized SL
+        "tp_pips": [200, 400, 600, 800, 1000],
+        "lot_size": 0.01,
+        "num_orders": 5,
+        "category": "commodity",
+        "sessions": ["London", "NewYork"],
+    },
+    "EURUSD": {
+        "name": "EUR/USD",
+        "td_code": "EUR/USD",
+        "mt5_code": "EURUSD",
+        "pip": 0.0001,
+        "pip_value": 10.0,
+        "decimals": 5,
+        "sl_pips": 30,
+        "tp_pips": [30, 60, 90, 120, 150],
+        "lot_size": 0.01,
+        "num_orders": 5,
+        "category": "forex",
+        "sessions": ["London", "NewYork"],
+    },
+    "GBPUSD": {
+        "name": "GBP/USD",
+        "td_code": "GBP/USD",
+        "mt5_code": "GBPUSD",
+        "pip": 0.0001,
+        "pip_value": 10.0,
+        "decimals": 5,
+        "sl_pips": 35,
+        "tp_pips": [35, 70, 105, 140, 175],
+        "lot_size": 0.01,
+        "num_orders": 5,
+        "category": "forex",
+        "sessions": ["London", "NewYork"],
+    },
+    "USDJPY": {
+        "name": "USD/JPY",
+        "td_code": "USD/JPY",
+        "mt5_code": "USDJPY",
+        "pip": 0.01,
+        "pip_value": 6.67,           # Approx for JPY pairs
+        "decimals": 3,
+        "sl_pips": 30,
+        "tp_pips": [30, 60, 90, 120, 150],
+        "lot_size": 0.01,
+        "num_orders": 5,
+        "category": "forex",
+        "sessions": ["Asian", "London", "NewYork"],
+    },
+    "AUDUSD": {
+        "name": "AUD/USD",
+        "td_code": "AUD/USD",
+        "mt5_code": "AUDUSD",
+        "pip": 0.0001,
+        "pip_value": 10.0,
+        "decimals": 5,
+        "sl_pips": 25,
+        "tp_pips": [25, 50, 75, 100, 125],
+        "lot_size": 0.01,
+        "num_orders": 5,
+        "category": "forex",
+        "sessions": ["Asian", "London", "NewYork"],
+    },
+    "USDCHF": {
+        "name": "USD/CHF",
+        "td_code": "USD/CHF",
+        "mt5_code": "USDCHF",
+        "pip": 0.0001,
+        "pip_value": 10.0,
+        "decimals": 5,
+        "sl_pips": 25,
+        "tp_pips": [25, 50, 75, 100, 125],
+        "lot_size": 0.01,
+        "num_orders": 5,
+        "category": "forex",
+        "sessions": ["London", "NewYork"],
+    },
+    "USDCAD": {
+        "name": "USD/CAD",
+        "td_code": "USD/CAD",
+        "mt5_code": "USDCAD",
+        "pip": 0.0001,
+        "pip_value": 10.0,
+        "decimals": 5,
+        "sl_pips": 25,
+        "tp_pips": [25, 50, 75, 100, 125],
+        "lot_size": 0.01,
+        "num_orders": 5,
+        "category": "forex",
+        "sessions": ["London", "NewYork"],
+    },
+    "NZDUSD": {
+        "name": "NZD/USD",
+        "td_code": "NZD/USD",
+        "mt5_code": "NZDUSD",
+        "pip": 0.0001,
+        "pip_value": 10.0,
+        "decimals": 5,
+        "sl_pips": 25,
+        "tp_pips": [25, 50, 75, 100, 125],
+        "lot_size": 0.01,
+        "num_orders": 5,
+        "category": "forex",
+        "sessions": ["Asian", "London", "NewYork"],
+    },
+    "BTCUSD": {
+        "name": "Bitcoin",
+        "td_code": "BTC/USD",
+        "mt5_code": "BTCUSD",
+        "pip": 1.0,                  # 1 pip = $1.00 for BTC
+        "pip_value": 1.0,            # $ per pip per 1.0 lot
+        "decimals": 2,
+        "sl_pips": 500,
+        "tp_pips": [500, 1000, 1500, 2000, 2500],
+        "lot_size": 0.01,
+        "num_orders": 5,
+        "category": "crypto",
+        "sessions": ["All"],         # Crypto trades 24/7
+    },
+    "ETHUSD": {
+        "name": "Ethereum",
+        "td_code": "ETH/USD",
+        "mt5_code": "ETHUSD",
+        "pip": 0.1,
+        "pip_value": 1.0,
+        "decimals": 2,
+        "sl_pips": 50,
+        "tp_pips": [50, 100, 150, 200, 250],
+        "lot_size": 0.01,
+        "num_orders": 5,
+        "category": "crypto",
+        "sessions": ["All"],
+    },
+}
+
+# Active symbols for scanning (toggle on/off)
+ACTIVE_SYMBOLS = list(SYMBOLS.keys())
+
+# ── Grok xAI Configuration ─────────────────────────────────
+GROK_API_KEY = _get_secret("GROK_API_KEY")
+GROK_MODEL = "grok-3-mini-fast"     # Fast model for real-time decisions
+GROK_ANALYSIS_MODEL = "grok-3-mini"  # Deeper analysis model
+GROK_API_URL = "https://api.x.ai/v1/chat/completions"
 
 # ── Session Definitions (UTC) ───────────────────────────────
 SESSIONS_UTC = {
@@ -104,19 +258,26 @@ KILLZONES_UTC = {
 }
 
 # ── Gold-Specific TP Levels (in pips) ───────────────────────
-# 10-level take profit system tuned for gold volatility
-# Using the 15/10 split + trailing approach
-TP_LEVELS_PIPS = [20, 20, 20, 20, 30, 40, 50, 50, 60, 60]
+# 5-level layered order system — V6 Callisto Optimized
+# SL: 200 pips | 5 x 0.01 lot per trade
+# Backtested: 51.8% WR, 1.47 PF, +209% on $1,200 (6 months)
+# A+ only filter: 51.4% WR, 1.66 PF, 23.8% max DD
+TP_LEVELS_PIPS = [200, 200, 200, 200, 200]  # Non-cumulative: TP1=200, TP2=400, TP3=600, TP4=800, TP5=1000
 
-# Lot percentage to close at each TP level (15/10 split + runner)
-TP_LOT_PCT = [0.15, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10, 0.05]
+# Lot percentage to close at each TP level (5 equal orders)
+TP_LOT_PCT = [0.20, 0.20, 0.20, 0.20, 0.20]
+
+# Layered order settings — V6 Callisto Optimized
+LAYERED_LOT_SIZE = 0.01       # Per order lot size
+LAYERED_NUM_ORDERS = 5        # 5 orders at same entry
+LAYERED_TP_PIPS = [200, 400, 600, 800, 1000]  # Cumulative TP targets
 
 # Trailing SL rules: after which TP, move SL to which TP level
 # Format: {tp_number: trail_sl_to_tp_level}
 TRAILING_SL_RULES = {
     1: "breakeven",   # TP1 hit → SL to breakeven + 2 pip buffer
-    4: 2,             # TP4 hit → SL to TP2 level
-    7: 5,             # TP7 hit → SL to TP5 level
+    3: 1,             # TP3 hit → SL to TP1 level
+    5: 3,             # TP5 hit → SL to TP3 level
 }
 
 # ── Scoring Thresholds ──────────────────────────────────────
@@ -129,32 +290,41 @@ GRADE_THRESHOLDS = {
 }
 
 # Signal minimum requirements
-SIGNAL_MIN_GRADE_SCALP = "A"    # Scalp requires A or A+
-SIGNAL_MIN_GRADE_SWING = "A"    # Swing requires A or A+
-SIGNAL_MIN_SCORE_SCALP = 78
-SIGNAL_MIN_SCORE_SWING = 80
+SIGNAL_MIN_GRADE_SCALP = "A+"   # V6 Optimized: A+ only (1.66 PF, 23.8% DD)
+SIGNAL_MIN_GRADE_SWING = "A+"   # V6 Optimized: A+ only for max conviction
+SIGNAL_MIN_SCORE_SCALP = 80
+SIGNAL_MIN_SCORE_SWING = 82
 
 # ── ATR Multipliers for SL/TP ───────────────────────────────
-ATR_SL_MULT = 1.5       # SL = 1.5x ATR
-ATR_TP1_MULT = 2.0      # TP1 = 2.0x ATR
-ATR_TP2_MULT = 4.5      # TP2 = 4.5x ATR (swing target)
+# SL is FIXED at 40 pips (Callisto FX rule). ATR multipliers
+# only used for TP scaling when ATR > 40 pips.
+ATR_SL_MULT = 1.5       # Legacy (overridden by fixed SL)
+ATR_TP1_MULT = 2.0      # TP1 scale factor (legacy)
+ATR_TP2_MULT = 4.5      # TP2 scale factor (legacy)
+FIXED_SL_PIPS = 200      # V6 Optimized: 200-pip SL (backtested profitable)
+FIXED_TP1_MIN_PIPS = 200  # V6 Optimized: TP1 = 200 pips (1:1 floor)
 
-# ── Risk Management ─────────────────────────────────────────
+# ── Risk Management (Callisto FX Rules) ────────────────────
 RISK_CONSERVATIVE_PCT = 2.0
 RISK_MODERATE_PCT = 3.0
 RISK_AGGRESSIVE_PCT = 5.0
 MAX_CONCURRENT_TRADES = 3
 MAX_DAILY_LOSS_PCT = 6.0   # Hard stop: -6% daily drawdown
 MAX_DRAWDOWN_PCT = 20.0    # Hard stop: -20% total drawdown
+MAX_DAILY_LOSSES = 2        # Callisto FX: Max 2 losses/day — NO MORE TRADING
+SL_TO_BE_PIPS = 15          # Callisto: SL to breakeven at 10-20 pips profit (mid=15)
+PARTIAL_CLOSE_PCT_1 = 0.25  # Callisto: 20-25% partials initially
+PARTIAL_CLOSE_PCT_2 = 0.25  # Callisto: Another 25% at key HTF levels
+MIN_RR_RATIO = 2.0           # Callisto BB Strategy: Strict 1:2 R:R minimum
 
-# ── Gold Engine V5 Module Weights ───────────────────────────
+# ── Gold Engine V6 Callisto Module Weights ──────────────────
 # Maximum bonus each module can contribute
 MODULE_WEIGHTS = {
     # Technical Modules (1-17)
-    "mtf_alignment":     15,   # Multi-timeframe trend
+    "mtf_alignment":     18,   # Multi-timeframe trend (upgraded: 4-TF 2/3 rule)
     "supply_demand":     12,   # Fresh S/D zone
     "fvg":                8,   # Fair Value Gap
-    "choch":             10,   # Change of Character
+    "choch":             10,   # Change of Character (body-close enforced)
     "killzone":           8,   # ICT Killzone timing
     "rsi_divergence":     8,   # RSI divergence (regular)
     "rsi_hidden_div":     6,   # RSI hidden divergence
@@ -174,6 +344,13 @@ MODULE_WEIGHTS = {
     "cot_dxy":           12,   # COT positioning + DXY correlation
     "news_filter":       -15,  # News event danger (mostly penalty)
     "volume":            10,   # Volume confirmation
+    # Callisto FX Modules (21-26)
+    "trc":               20,   # TRC Framework (HIGHEST WEIGHT — core system)
+    "wcr_range":         12,   # William-Certified Range
+    "breaker_block":     12,   # Breaker Block + SMA44
+    "premium_discount":  10,   # ICT Premium/Discount Array
+    "candlestick":        8,   # Expanded candlestick patterns
+    "risk_enforcer":    -20,   # Risk enforcer (mostly penalty/blocker)
 }
 
 # ── Alert Priority Levels ───────────────────────────────────

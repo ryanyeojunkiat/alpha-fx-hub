@@ -90,6 +90,23 @@ class SupabaseAuth:
         except Exception:
             return None
 
+    def refresh_session(self, refresh_token: str) -> Optional[Dict]:
+        """Use refresh token to get a new access token (keeps user logged in)."""
+        try:
+            resp = requests.post(
+                f"{self.url}/auth/v1/token?grant_type=refresh_token",
+                json={"refresh_token": refresh_token},
+                headers=self.headers,
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("access_token"):
+                    return data
+            return None
+        except Exception:
+            return None
+
     def sign_out(self, access_token: str) -> bool:
         """Sign out / invalidate token."""
         try:
@@ -132,8 +149,18 @@ def render_auth_page(auth: SupabaseAuth) -> bool:
             st.session_state.user = user
             return True
         else:
-            # Token expired — clear session
+            # Token expired — try refresh before giving up
+            refresh_token = st.session_state.get("refresh_token", "")
+            if refresh_token:
+                new_session = auth.refresh_session(refresh_token)
+                if new_session and new_session.get("access_token"):
+                    st.session_state.access_token = new_session["access_token"]
+                    st.session_state.refresh_token = new_session.get("refresh_token", refresh_token)
+                    st.session_state.user = new_session.get("user", st.session_state.get("user", {}))
+                    return True
+            # Refresh also failed — now clear session
             st.session_state.pop("access_token", None)
+            st.session_state.pop("refresh_token", None)
             st.session_state.pop("user", None)
 
     # ── Auth Page Layout ──
