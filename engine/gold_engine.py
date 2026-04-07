@@ -1268,20 +1268,28 @@ def gold_engine_score(
         grade = "D"
     elif trc_full and callisto_2of3:
         # Full TRC setup with 2/3 HTF alignment — highest conviction
-        if score >= 80:
+        if score >= 68:
             grade = "A+"
-        elif score >= 70:
+        elif score >= 58:
             grade = "A"
         else:
             grade = "B"
     elif trc_setup and callisto_2of3:
         # TRC step 1+2 but waiting for retest
-        if score >= 85:
+        if score >= 72:
             grade = "A"
-        elif score >= 70:
+        elif score >= 58:
             grade = "B"
         else:
             grade = "C"
+    elif trc_setup and confirmations >= 8:
+        # Strong TRC setup without full 2/3 HTF but many confirmations
+        if score >= 75:
+            grade = "A+"
+        elif score >= 65:
+            grade = "A"
+        else:
+            grade = "B"
     else:
         grade = _assign_grade(score, h4_aligned, overextended, confirmations, contradictions)
 
@@ -1382,11 +1390,11 @@ def _assign_grade(score: int, h4_aligned: bool, overextended: bool,
         if score >= 80:
             return "B"
 
-    if score >= 90:
+    if score >= 78 and confirmations >= 8:
         return "A+"
-    elif score >= 88:
+    elif score >= 70 and confirmations >= 6:
         return "A"
-    elif score >= 80:
+    elif score >= 60:
         return "B"
     elif score >= 45:
         return "C"

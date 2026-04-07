@@ -249,6 +249,10 @@ def init_state():
             grok_engine=st.session_state.grok, capital=1200.0
         )
 
+    # ── Auto-Telegram tracker (prevent duplicate sends) ──
+    if "tg_sent_signals" not in st.session_state:
+        st.session_state.tg_sent_signals = {}  # {symbol_direction_score: timestamp}
+
     # ── Notification Manager (for sending signals to channels) ──
     # NOTE: Telegram bot polling runs separately via bot_runner.py on Railway
     if "notifier" not in st.session_state:
@@ -367,6 +371,9 @@ with st.sidebar:
                 _auth_client.sign_out(st.session_state.get("access_token", ""))
             for k in ["access_token", "refresh_token", "user"]:
                 st.session_state.pop(k, None)
+            # Clear persistent browser session
+            from auth.supabase_auth import _clear_browser_session
+            _clear_browser_session()
             st.rerun()
 
 
@@ -814,42 +821,59 @@ def page_dashboard():
                 if g_adj and g_adj.get("notes"):
                     st.info(f"\U0001f9e0 Grok suggests: {g_adj.get('notes', '')}")
 
-        # ── Send Gold A+ signal to Telegram ──
+        # ── AUTO-SEND Gold A+ signal to Telegram ──
         notifier = st.session_state.get("notifier")
         if notifier and notifier.bot_token:
-            if st.button("\U0001f4e8 Send Gold A+ Signal to Telegram", type="primary"):
-                PIP_GOLD = 0.1
-                tp_pips_list = [200, 400, 600, 800, 1000]
-                if best["direction"] == "BUY":
-                    sl_price = round(entry - 200 * PIP_GOLD, 2)
-                    tp_prices = [round(entry + tp * PIP_GOLD, 2) for tp in tp_pips_list]
-                else:
-                    sl_price = round(entry + 200 * PIP_GOLD, 2)
-                    tp_prices = [round(entry - tp * PIP_GOLD, 2) for tp in tp_pips_list]
+            PIP_GOLD = 0.1
+            tp_pips_list = [200, 400, 600, 800, 1000]
+            if best["direction"] == "BUY":
+                sl_price = round(entry - 200 * PIP_GOLD, 2)
+                tp_prices = [round(entry + tp * PIP_GOLD, 2) for tp in tp_pips_list]
+            else:
+                sl_price = round(entry + 200 * PIP_GOLD, 2)
+                tp_prices = [round(entry - tp * PIP_GOLD, 2) for tp in tp_pips_list]
 
-                tg_signal = {
-                    "symbol": "XAUUSD",
-                    "direction": best["direction"],
-                    "grade": "A+",
-                    "score": best["score"],
-                    "confidence": best["confidence"],
-                    "mode": "SCALP",
-                    "entry_price": entry,
-                    "sl": sl_price,
-                    "tp_levels": tp_prices,
-                    "risk_pips": 200,
-                    "num_orders": 5,
-                    "lot_size": 0.01,
-                    "pip_value": 0.10,
-                    "modules": best.get("modules", {}),
-                    "confirmations": best.get("confirmations", 0),
-                    "contradictions": best.get("contradictions", 0),
-                }
+            tg_signal = {
+                "symbol": "XAUUSD",
+                "direction": best["direction"],
+                "grade": "A+",
+                "score": best["score"],
+                "confidence": best["confidence"],
+                "mode": "SCALP",
+                "entry_price": entry,
+                "sl": sl_price,
+                "tp_levels": tp_prices,
+                "risk_pips": 200,
+                "num_orders": 5,
+                "lot_size": 0.01,
+                "pip_value": 0.10,
+                "modules": best.get("modules", {}),
+                "confirmations": best.get("confirmations", 0),
+                "contradictions": best.get("contradictions", 0),
+            }
+
+            # Auto-send with 15-min cooldown
+            import time as _time
+            sig_key = f"XAUUSD_{best['direction']}_{best['score']}"
+            sent_signals = st.session_state.get("tg_sent_signals", {})
+            last_sent = sent_signals.get(sig_key, 0)
+
+            if _time.time() - last_sent > 900:
                 ok = notifier.send_signal_v2(tg_signal, grok_verdict=grok_result if grok_result else None)
                 if ok:
-                    st.success("\u2705 Gold A+ signal sent to Telegram!")
-                else:
-                    st.error("Failed to send. Check bot token.")
+                    sent_signals[sig_key] = _time.time()
+                    st.session_state.tg_sent_signals = sent_signals
+                    st.success("\u2705 Gold A+ signal auto-sent to Telegram!")
+            else:
+                mins_ago = int((_time.time() - last_sent) / 60)
+                st.caption(f"\U0001f4e8 Gold signal already sent {mins_ago}m ago (cooldown: 15m)")
+
+            if st.button("\U0001f504 Resend Gold Signal to Telegram", key="resend_gold_tg"):
+                ok = notifier.send_signal_v2(tg_signal, grok_verdict=grok_result if grok_result else None)
+                if ok:
+                    sent_signals[sig_key] = _time.time()
+                    st.session_state.tg_sent_signals = sent_signals
+                    st.success("\u2705 Resent!")
 
     # Module breakdown
     if best:
@@ -2271,61 +2295,82 @@ def page_multi_signal():
             {order_html}
         </div>""", unsafe_allow_html=True)
 
-        # ── Telegram send button for A+ signals ──
+        # ── AUTO + MANUAL Telegram for A+ signals ──
         if grade == "A+":
             notifier = st.session_state.get("notifier")
             if notifier and notifier.bot_token:
-                btn_key = f"tg_send_{sym}_{score}"
-                if st.button(f"\U0001f4e8 Send {sym} Signal to Telegram", key=btn_key, type="primary"):
-                    if us and us.is_valid:
-                        # Use unified signal data for Telegram
-                        tg_signal = {
-                            "symbol": sym,
-                            "direction": us.direction,
-                            "grade": us.grade,
-                            "score": us.confidence,
-                            "confidence": "HIGH",
-                            "mode": "SCALP",
-                            "entry_price": us.entry_price,
-                            "sl": us.sl_price,
-                            "tp_levels": [tp["price"] for tp in us.tp_levels],
-                            "risk_pips": us.sl_pips,
-                            "num_orders": us.num_orders,
-                            "lot_size": us.lot_size,
-                            "pip_value": us.lot_size * cfg.get("pip_value", 10),
-                            "modules": us.callisto_modules,
-                            "confirmations": len(us.strategies_confirming),
-                            "contradictions": len(us.strategies_warning),
-                        }
-                        grok_tg = {
-                            "confirmed": us.grok_agrees or us.callisto_agreement in ("AGREE", "PARTIAL"),
-                            "agreement": us.callisto_agreement,
-                            "confidence": us.confidence,
-                            "reasoning": us.why_trade,
-                        }
+                # Build Telegram signal data
+                if us and us.is_valid:
+                    tg_signal = {
+                        "symbol": sym,
+                        "direction": us.direction,
+                        "grade": us.grade,
+                        "score": us.confidence,
+                        "confidence": "HIGH",
+                        "mode": "SCALP",
+                        "entry_price": us.entry_price,
+                        "sl": us.sl_price,
+                        "tp_levels": [tp["price"] for tp in us.tp_levels],
+                        "risk_pips": us.sl_pips,
+                        "num_orders": us.num_orders,
+                        "lot_size": us.lot_size,
+                        "pip_value": us.lot_size * cfg.get("pip_value", 10),
+                        "modules": us.callisto_modules,
+                        "confirmations": len(us.strategies_confirming),
+                        "contradictions": len(us.strategies_warning),
+                    }
+                    grok_tg = {
+                        "confirmed": us.grok_agrees or us.callisto_agreement in ("AGREE", "PARTIAL"),
+                        "agreement": us.callisto_agreement,
+                        "confidence": us.confidence,
+                        "reasoning": us.why_trade,
+                    }
+                else:
+                    pip_v = cfg["pip"]
+                    entry_p = data["price"]
+                    if direction == "BUY":
+                        sl_p = entry_p - cfg["sl_pips"] * pip_v
+                        tp_list = [round(entry_p + tp * pip_v, cfg["decimals"]) for tp in cfg["tp_pips"]]
                     else:
-                        # Fallback: Callisto-only Telegram
-                        pip_v = cfg["pip"]
-                        entry_p = data["price"]
-                        if direction == "BUY":
-                            sl_p = entry_p - cfg["sl_pips"] * pip_v
-                            tp_list = [round(entry_p + tp * pip_v, cfg["decimals"]) for tp in cfg["tp_pips"]]
-                        else:
-                            sl_p = entry_p + cfg["sl_pips"] * pip_v
-                            tp_list = [round(entry_p - tp * pip_v, cfg["decimals"]) for tp in cfg["tp_pips"]]
-                        tg_signal = {
-                            "symbol": sym, "direction": direction, "grade": grade, "score": score,
-                            "confidence": "HIGH", "mode": "SCALP", "entry_price": entry_p,
-                            "sl": round(sl_p, cfg["decimals"]), "tp_levels": tp_list,
-                            "risk_pips": cfg["sl_pips"], "num_orders": cfg["num_orders"],
-                            "lot_size": cfg["lot_size"], "pip_value": cfg["lot_size"] * cfg["pip_value"],
-                            "modules": {}, "confirmations": score // 10, "contradictions": 0,
-                        }
-                        grok_tg = None
+                        sl_p = entry_p + cfg["sl_pips"] * pip_v
+                        tp_list = [round(entry_p - tp * pip_v, cfg["decimals"]) for tp in cfg["tp_pips"]]
+                    tg_signal = {
+                        "symbol": sym, "direction": direction, "grade": grade, "score": score,
+                        "confidence": "HIGH", "mode": "SCALP", "entry_price": entry_p,
+                        "sl": round(sl_p, cfg["decimals"]), "tp_levels": tp_list,
+                        "risk_pips": cfg["sl_pips"], "num_orders": cfg["num_orders"],
+                        "lot_size": cfg["lot_size"], "pip_value": cfg["lot_size"] * cfg["pip_value"],
+                        "modules": {}, "confirmations": score // 10, "contradictions": 0,
+                    }
+                    grok_tg = None
 
+                # ── AUTO-SEND: Send automatically if not sent in last 15 minutes ──
+                import time as _time
+                sig_key = f"{sym}_{direction}_{score}"
+                sent_signals = st.session_state.get("tg_sent_signals", {})
+                last_sent = sent_signals.get(sig_key, 0)
+                auto_cooldown = 900  # 15 minutes
+
+                if _time.time() - last_sent > auto_cooldown:
                     ok = notifier.send_signal_v2(tg_signal, grok_verdict=grok_tg)
                     if ok:
-                        st.success(f"\u2705 {sym} unified signal sent to Telegram!")
+                        sent_signals[sig_key] = _time.time()
+                        st.session_state.tg_sent_signals = sent_signals
+                        st.success(f"\u2705 {sym} A+ signal auto-sent to Telegram!")
+                    else:
+                        st.warning(f"Auto-send failed for {sym}. Check bot token.")
+                else:
+                    mins_ago = int((_time.time() - last_sent) / 60)
+                    st.caption(f"\U0001f4e8 {sym} signal already sent {mins_ago}m ago (cooldown: 15m)")
+
+                # Manual re-send button
+                btn_key = f"tg_resend_{sym}_{score}"
+                if st.button(f"\U0001f504 Resend {sym} to Telegram", key=btn_key):
+                    ok = notifier.send_signal_v2(tg_signal, grok_verdict=grok_tg)
+                    if ok:
+                        sent_signals[sig_key] = _time.time()
+                        st.session_state.tg_sent_signals = sent_signals
+                        st.success(f"\u2705 {sym} signal resent!")
                     else:
                         st.error("Failed to send. Check bot token.")
 

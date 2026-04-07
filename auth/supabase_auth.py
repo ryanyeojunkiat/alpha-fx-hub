@@ -136,20 +136,51 @@ class SupabaseAuth:
             return False, f"Error: {str(e)}"
 
 
+def _save_session_to_browser(access_token: str, refresh_token: str):
+    """Save session tokens to browser via query params (survives page reload)."""
+    try:
+        # Use Streamlit's built-in cookie-like persistence via local storage
+        # We store the refresh_token which is long-lived (can regenerate access_token)
+        if refresh_token:
+            st.query_params["rt"] = refresh_token
+    except Exception:
+        pass  # Older Streamlit versions may not support this
+
+
+def _load_session_from_browser() -> str:
+    """Load refresh token from browser query params."""
+    try:
+        return st.query_params.get("rt", "")
+    except Exception:
+        return ""
+
+
+def _clear_browser_session():
+    """Clear saved session from browser."""
+    try:
+        if "rt" in st.query_params:
+            del st.query_params["rt"]
+    except Exception:
+        pass
+
+
 def render_auth_page(auth: SupabaseAuth) -> bool:
     """
     Render the login/signup page.
     Returns True if user is authenticated, False otherwise.
     Sets st.session_state.user and st.session_state.access_token on success.
+
+    Persistent login: Uses browser query params to store refresh token.
+    User stays logged in until they explicitly log out.
     """
-    # Check if already logged in
+    # ── Step 1: Check if already logged in this session ──
     if st.session_state.get("access_token"):
         user = auth.get_user(st.session_state.access_token)
         if user:
             st.session_state.user = user
             return True
         else:
-            # Token expired — try refresh before giving up
+            # Token expired — try refresh
             refresh_token = st.session_state.get("refresh_token", "")
             if refresh_token:
                 new_session = auth.refresh_session(refresh_token)
@@ -157,11 +188,27 @@ def render_auth_page(auth: SupabaseAuth) -> bool:
                     st.session_state.access_token = new_session["access_token"]
                     st.session_state.refresh_token = new_session.get("refresh_token", refresh_token)
                     st.session_state.user = new_session.get("user", st.session_state.get("user", {}))
+                    _save_session_to_browser(new_session["access_token"], new_session.get("refresh_token", refresh_token))
                     return True
-            # Refresh also failed — now clear session
+            # Clear everything
             st.session_state.pop("access_token", None)
             st.session_state.pop("refresh_token", None)
             st.session_state.pop("user", None)
+
+    # ── Step 2: Try to restore session from browser (persistent login) ──
+    if not st.session_state.get("access_token"):
+        saved_rt = _load_session_from_browser()
+        if saved_rt:
+            new_session = auth.refresh_session(saved_rt)
+            if new_session and new_session.get("access_token"):
+                st.session_state.access_token = new_session["access_token"]
+                st.session_state.refresh_token = new_session.get("refresh_token", saved_rt)
+                st.session_state.user = new_session.get("user", {})
+                _save_session_to_browser(new_session["access_token"], new_session.get("refresh_token", saved_rt))
+                return True
+            else:
+                # Saved token is dead — clear it
+                _clear_browser_session()
 
     # ── Auth Page Layout ──
     st.markdown("""
@@ -256,6 +303,8 @@ def render_auth_page(auth: SupabaseAuth) -> bool:
                             st.session_state.access_token = data["access_token"]
                             st.session_state.refresh_token = data.get("refresh_token", "")
                             st.session_state.user = data.get("user", {})
+                            # Save to browser for persistent login
+                            _save_session_to_browser(data["access_token"], data.get("refresh_token", ""))
                             st.success(msg)
                             st.rerun()
                         else:

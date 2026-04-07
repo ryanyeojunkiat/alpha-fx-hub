@@ -282,9 +282,9 @@ TRAILING_SL_RULES = {
 
 # ── Scoring Thresholds ──────────────────────────────────────
 GRADE_THRESHOLDS = {
-    "A+": 90,
-    "A":  88,
-    "B":  80,
+    "A+": 78,   # V6.1: Lowered from 90 — requires strong confluence but achievable
+    "A":  70,   # V6.1: Lowered from 88 — good setup, wait for better entry
+    "B":  60,   # V6.1: Lowered from 80 — marginal, don't trade
     "C":  45,
     "D":  0,
 }
