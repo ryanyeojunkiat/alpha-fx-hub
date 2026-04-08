@@ -786,9 +786,15 @@ def get_regime(df:pd.DataFrame) -> str:
     r = df.iloc[-1]
     if pd.isna(r["atr14"]) or r["atr14"] <= 0:
         return "insufficient"
-    if r["ema20"]>r["ema50"]>r["ema200"] and r["slope20"]>0:
+    # Full EMA alignment = strong trend
+    if r["ema20"]>r["ema50"]>r["ema200"]:
         return "trend_up"
-    if r["ema20"]<r["ema50"]<r["ema200"] and r["slope20"]<0:
+    if r["ema20"]<r["ema50"]<r["ema200"]:
+        return "trend_down"
+    # Partial alignment (20>50 with positive slope) = weak trend
+    if r["ema20"]>r["ema50"] and r["slope20"]>0:
+        return "trend_up"
+    if r["ema20"]<r["ema50"] and r["slope20"]<0:
         return "trend_down"
     if r["bb_width"]<0.005:
         return "squeeze"
@@ -830,13 +836,8 @@ def _trend_plan(df:pd.DataFrame, symbol:str, regime:str, htf_bias:str) -> Plan:
         return p
 
     dist = abs(close-ema20)/atr
-    if dist > 1.0:
+    if dist > 2.5:
         p.reason = f"Too extended"
-        return p
-
-    touched_pb = dist <= 0.75
-    resumed = (close>prev["high"]) if direction=="Buy" else (close<prev["low"])
-    if not (touched_pb or resumed):
         return p
 
     if direction=="Buy":
@@ -857,7 +858,7 @@ def _trend_plan(df:pd.DataFrame, symbol:str, regime:str, htf_bias:str) -> Plan:
     rr = abs(tp2-entry)/max(abs(entry-sl),1e-9)
     score, breakdown, confluence, sess_pts = _score_plan(row,prev,df,direction,rr,symbol)
     sess_pts2, sess_name = session_score(symbol, row.get("time",pd.Timestamp.utcnow()))
-    ready = (score>=70 and rr>=1.5 and confluence>=3)
+    ready = (score>=70 and rr>=1.0 and confluence>=2)
 
     p2 = Plan(
         symbol=symbol, regime=regime, strategy="Trend Continuation", direction=direction,
@@ -895,7 +896,7 @@ def _mean_rev_plan(df:pd.DataFrame, symbol:str, regime:str) -> Plan:
     ema20 = row["ema20"]
     dev = (close-ema20)/atr
 
-    if abs(dev) < 1.3:
+    if abs(dev) < 0.8:
         return _empty(symbol, regime, "Deviation too small")
 
     bb_touch = (close<=row["bb_lower"] and dev<0) or (close>=row["bb_upper"] and dev>0)
@@ -1005,25 +1006,28 @@ def _xau_plan(df5:pd.DataFrame, df15:pd.DataFrame, df1h:pd.DataFrame, symbol:str
 
     aligned_bull = all(b in ("bull","bull_weak") for b in [b5,b15,b1h])
     aligned_bear = all(b in ("bear","bear_weak") for b in [b5,b15,b1h])
+    # Partial alignment: at least 2 of 3 timeframes agree
+    biases = [b5, b15, b1h]
+    bull_count = sum(1 for b in biases if b in ("bull","bull_weak"))
+    bear_count = sum(1 for b in biases if b in ("bear","bear_weak"))
+    partial_bull = bull_count >= 2
+    partial_bear = bear_count >= 2
 
     dist = abs(row["close"]-row["ema20"])/atr
-    too_ext = dist > 0.9
+    too_ext = dist > 2.0
     last3 = df5.tail(3)
-    vert = (last3["close"]-last3["open"]).abs().sum() > atr*1.8
+    vert = (last3["close"]-last3["open"]).abs().sum() > atr*2.5
 
     rh = df5.iloc[-6:-1]["high"].max()
     rl = df5.iloc[-6:-1]["low"].min()
     bull_sw = row["low"]<rl and row["close"]>rl
     bear_sw = row["high"]>rh and row["close"]<rh
 
-    long_t = aligned_bull and not too_ext and not vert and (
-        (row["close"]>row["ema20"] and prev["close"]<=prev["ema20"]) or bull_sw)
-    short_t = aligned_bear and not too_ext and not vert and (
-        (row["close"]<row["ema20"] and prev["close"]>=prev["ema20"]) or bear_sw)
-
-    if not is_xau_session_ok(row["time"]):
-        p.reason = "XAU session filter"
-        return p
+    # Relaxed entry: partial alignment OK, EMA cross OR sweep OR just trending
+    long_t = (aligned_bull or partial_bull) and not too_ext and not vert and (
+        row["close"]>row["ema20"] or bull_sw)
+    short_t = (aligned_bear or partial_bear) and not too_ext and not vert and (
+        row["close"]<row["ema20"] or bear_sw)
 
     if not long_t and not short_t:
         p.entry_reasons = [f"5m={b5} 15m={b15} 1h={b1h}"]
@@ -1047,7 +1051,7 @@ def _xau_plan(df5:pd.DataFrame, df15:pd.DataFrame, df1h:pd.DataFrame, symbol:str
         rr = (entry-tp1)/max(risk,1e-9)
         direction = "Sell"
 
-    if rr < 1.2:
+    if rr < 0.8:
         p.reason = "TP20pts SL mismatch"
         return p
 

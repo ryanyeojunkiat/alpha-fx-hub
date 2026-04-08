@@ -350,8 +350,10 @@ def get_regime(df):
     if len(df) < 220: return "insufficient"
     r = df.iloc[-1]
     if pd.isna(r["atr14"]) or r["atr14"] <= 0: return "insufficient"
-    if r["ema20"] > r["ema50"] > r["ema200"] and r["slope20"] > 0: return "trend_up"
-    if r["ema20"] < r["ema50"] < r["ema200"] and r["slope20"] < 0: return "trend_down"
+    if r["ema20"] > r["ema50"] > r["ema200"]: return "trend_up"
+    if r["ema20"] < r["ema50"] < r["ema200"]: return "trend_down"
+    if r["ema20"] > r["ema50"] and r["slope20"] > 0: return "trend_up"
+    if r["ema20"] < r["ema50"] and r["slope20"] < 0: return "trend_down"
     if r["bb_width"] < 0.005: return "squeeze"
     if 40 <= r["rsi14"] <= 60: return "range"
     return "mean_revert"
@@ -402,7 +404,7 @@ def scan_symbol(symbol, events=None):
             strategy = "BB Squeeze"
         else:
             dev = (close - ema20) / atr
-            if abs(dev) < 1.3:
+            if abs(dev) < 0.8:
                 return None
             direction = "Sell" if dev > 0 else "Buy"
             strategy = "Mean Reversion"
