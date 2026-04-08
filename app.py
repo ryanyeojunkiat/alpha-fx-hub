@@ -29,7 +29,7 @@ except Exception:
 from config import (
     PLATFORM_NAME, VERSION, TELEGRAM_BOT_TOKEN, TELEGRAM_PRIVATE_CHANNEL_ID,
     TELEGRAM_PUBLIC_CHANNEL_ID, SUPABASE_URL, SUPABASE_KEY, TWELVE_DATA_API_KEY,
-    METAAPI_TOKEN, METAAPI_ACCOUNT, SYMBOLS, ACTIVE_SYMBOLS
+    METAAPI_TOKEN, METAAPI_ACCOUNT, SYMBOLS, ACTIVE_SYMBOLS, TE_API_KEY
 )
 from telegram.notifications import NotificationManager
 from auth.supabase_auth import SupabaseAuth, render_auth_page, _clear_browser_session
@@ -158,6 +158,92 @@ def mt5_symbol(s:str) -> str:
     suffix = st.session_state.get("ma_sym_suffix","")
     base = MT5_SYMBOL_MAP.get(norm(s), norm(s))
     return base + suffix
+
+# ============================================================
+# TRADING ECONOMICS — ECONOMIC CALENDAR
+# ============================================================
+_SYMBOL_CURRENCIES = {
+    "XAUUSD": ["USD","EUR","GBP","JPY","CNY"],
+    "EURUSD": ["USD","EUR"], "GBPUSD": ["USD","GBP"],
+    "USDJPY": ["USD","JPY"], "AUDUSD": ["USD","AUD"],
+    "USDCAD": ["USD","CAD"], "USDCHF": ["USD","CHF"],
+    "NZDUSD": ["USD","NZD"], "BTCUSD": ["USD"], "ETHUSD": ["USD"],
+}
+_HIGH_IMPACT = [
+    "Interest Rate Decision","Fed Interest Rate Decision",
+    "Non Farm Payrolls","CPI","Core CPI","PPI","Core PPI",
+    "GDP Growth Rate","Unemployment Rate","Initial Jobless Claims",
+    "Retail Sales","ISM Manufacturing PMI","ISM Services PMI",
+    "FOMC Minutes","Fed Chair Powell Speech",
+    "ECB Interest Rate Decision","BOE Interest Rate Decision",
+    "BOJ Interest Rate Decision","Trade Balance",
+    "Consumer Confidence","Durable Goods Orders",
+    "PCE Price Index","Core PCE Price Index",
+]
+
+@st.cache_data(ttl=1800)
+def fetch_te_calendar():
+    """Fetch today's economic calendar from Trading Economics (cached 30 min)."""
+    te_key = TE_API_KEY
+    if not te_key:
+        return []
+    try:
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        url = f"https://api.tradingeconomics.com/calendar?c={te_key}&d1={today}&d2={today}"
+        r = requests.get(url, timeout=15)
+        if r.status_code == 200:
+            data = r.json()
+            return data if isinstance(data, list) else []
+        return []
+    except Exception:
+        return []
+
+def te_news_check(symbol:str, events:list):
+    """Check for upcoming high-impact news affecting this symbol.
+    Returns (penalty, event_str, upcoming_events_list)."""
+    if not events:
+        return 0, None, []
+    now = datetime.utcnow()
+    affected = _SYMBOL_CURRENCIES.get(norm(symbol), ["USD"])
+    upcoming = []
+    worst_penalty = 0
+    worst_event = None
+
+    for ev in events:
+        try:
+            ev_cur = ev.get("Currency", ev.get("Country",""))
+            ev_name = ev.get("Event","")
+            ev_imp = ev.get("Importance", 0)
+            ev_date = ev.get("Date","")
+            if ev_cur not in affected:
+                continue
+            if ev_date:
+                ev_time = pd.to_datetime(ev_date, utc=True, errors="coerce")
+                if pd.isna(ev_time):
+                    continue
+                ev_time = ev_time.to_pydatetime().replace(tzinfo=None)
+            else:
+                continue
+            mins_until = (ev_time - now).total_seconds() / 60
+            # Show upcoming events within 4 hours
+            if -30 <= mins_until <= 240:
+                time_str = ev_time.strftime("%H:%M UTC")
+                imp_icon = "🔴" if ev_imp >= 3 else "🟡" if ev_imp >= 2 else "⚪"
+                upcoming.append(f"{imp_icon} {time_str} — {ev_name} ({ev_cur})")
+            # Danger window: 30 min before to 15 min after
+            if -15 <= mins_until <= 30:
+                is_high = any(h.lower() in ev_name.lower() for h in _HIGH_IMPACT)
+                if is_high or ev_imp >= 3:
+                    if -15 < worst_penalty:
+                        worst_penalty = -15
+                        worst_event = f"⚠️ {ev_name} ({ev_cur}) in {int(mins_until)}min"
+                elif ev_imp >= 2:
+                    if -10 < worst_penalty or worst_penalty == 0:
+                        worst_penalty = -10
+                        worst_event = f"⚡ {ev_name} ({ev_cur}) in {int(mins_until)}min"
+        except Exception:
+            continue
+    return worst_penalty, worst_event, upcoming
 
 # ============================================================
 # METAAPI REST
@@ -960,9 +1046,18 @@ def finalize_plan(plan:Plan, balance:float, risk_pct:float) -> Plan:
     plan.news_summary = news["summary"]
     plan.news_events = news.get("events",[])
     plan.news_ok = news.get("ok",False)
-    plan.final_score = int(max(0,min(100,plan.setup_score+plan.news_adj)))
+    # ── Trading Economics calendar integration ──
+    te_events = fetch_te_calendar()
+    te_penalty, te_warning, te_upcoming = te_news_check(plan.symbol, te_events)
+    plan.te_penalty = te_penalty
+    plan.te_warning = te_warning
+    plan.te_upcoming = te_upcoming
+    total_news_adj = plan.news_adj + te_penalty
+    plan.final_score = int(max(0,min(100,plan.setup_score+total_news_adj)))
     plan.final_grade = score_to_grade(plan.final_score)
-    if plan.news_risk=="HIGH" and plan.execution_status=="Ready to Enter":
+    if te_penalty <= -15 and plan.execution_status=="Ready to Enter":
+        plan.execution_status="HIGH NEWS RISK"
+    elif plan.news_risk=="HIGH" and plan.execution_status=="Ready to Enter":
         plan.execution_status="HIGH NEWS RISK"
     return plan
 
@@ -1207,16 +1302,33 @@ def render_news_panel(plan:Plan):
         f"<div style='font-size:11px;color:#8b9ab0;padding:2px 0;'>{str(e).replace('<','&lt;').replace('>','&gt;')}</div>"
         for e in (plan.news_events or []))
 
+    # ── Trading Economics upcoming events ──
+    te_upcoming = getattr(plan, "te_upcoming", [])
+    te_warning = getattr(plan, "te_warning", None)
+    te_penalty = getattr(plan, "te_penalty", 0)
+    te_html = ""
+    if te_upcoming:
+        te_items = "".join(f"<div style='font-size:11px;color:#c7d2fe;padding:2px 0;'>{e}</div>" for e in te_upcoming[:8])
+        te_warn_html = ""
+        if te_warning:
+            te_warn_html = f"<div style='font-size:12px;color:#ef4444;font-weight:700;margin-bottom:4px;'>{te_warning} (penalty: {te_penalty})</div>"
+        te_html = f"""<div style='border-top:1px solid rgba(255,255,255,0.08);padding-top:8px;margin-top:8px;'>
+<div style='font-size:11px;color:#8b9ab0;font-weight:600;margin-bottom:4px;'>ECONOMIC CALENDAR</div>
+{te_warn_html}{te_items}</div>"""
+    elif TE_API_KEY:
+        te_html = "<div style='border-top:1px solid rgba(255,255,255,0.08);padding-top:8px;margin-top:8px;font-size:11px;color:#4a5568;'>No upcoming events for this symbol</div>"
+
     st.markdown(f"""<div class='panel'>
-      <div class='mono-title'>GROK NEWS</div>
-      <div style='display:flex;align-items:center;gap:12px;margin-bottom:8px;'>
-        <div><span style='color:{risk_col};font-weight:700;'>{risk}</span></div>
-        <div><span style='color:{adj_col};font-weight:700;'>{adj_str}</span></div>
-        <div><span style='color:{bias_col};'>●</span> {bias}</div>
-      </div>
-      <div style='font-size:12px;color:#c7d2fe;margin-bottom:6px;'>{safe_summary}</div>
-      <div style='border-top:1px solid rgba(255,255,255,0.05);padding-top:6px;'>{evts}</div>
-    </div>""",unsafe_allow_html=True)
+<div class='mono-title'>GROK NEWS</div>
+<div style='display:flex;align-items:center;gap:12px;margin-bottom:8px;'>
+<div><span style='color:{risk_col};font-weight:700;'>{risk}</span></div>
+<div><span style='color:{adj_col};font-weight:700;'>{adj_str}</span></div>
+<div><span style='color:{bias_col};'>●</span> {bias}</div>
+</div>
+<div style='font-size:12px;color:#c7d2fe;margin-bottom:6px;'>{safe_summary}</div>
+<div style='border-top:1px solid rgba(255,255,255,0.05);padding-top:6px;'>{evts}</div>
+{te_html}
+</div>""",unsafe_allow_html=True)
 
 def render_trade_tracker(plan: Plan, current_price: float, df: pd.DataFrame):
     """Renders trade entry form + active trades. Returns (entry, sl, direction) or None."""

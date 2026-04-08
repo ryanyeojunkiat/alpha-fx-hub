@@ -27,6 +27,7 @@ XAI_KEY = os.environ.get("GROK_API_KEY", "") or os.environ.get("XAI_API_KEY", ""
 TG_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TG_CHANNEL = os.environ.get("TELEGRAM_PRIVATE_CHANNEL_ID", "")
 TG_PUBLIC = os.environ.get("TELEGRAM_PUBLIC_CHANNEL_ID", "")
+TE_KEY = os.environ.get("TE_API_KEY", "")
 
 SYMBOLS = ["XAUUSD", "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD"]
 API_MAP = {"EURUSD": "EUR/USD", "GBPUSD": "GBP/USD", "USDJPY": "USD/JPY",
@@ -42,6 +43,106 @@ SESSIONS_PREF = {
     "AUDUSD": ["Asian", "London"],
     "USDCAD": ["NewYork", "Overlap"],
 }
+
+# ── Trading Economics — News Filter ──
+# Which currencies affect each symbol
+SYMBOL_CURRENCIES = {
+    "XAUUSD": ["USD", "EUR", "GBP", "JPY", "CNY"],  # Gold reacts to all major
+    "EURUSD": ["USD", "EUR"],
+    "GBPUSD": ["USD", "GBP"],
+    "USDJPY": ["USD", "JPY"],
+    "AUDUSD": ["USD", "AUD"],
+    "USDCAD": ["USD", "CAD"],
+}
+HIGH_IMPACT_EVENTS = [
+    "Interest Rate Decision", "Fed Interest Rate Decision",
+    "Non Farm Payrolls", "CPI", "Core CPI", "PPI", "Core PPI",
+    "GDP Growth Rate", "Unemployment Rate", "Initial Jobless Claims",
+    "Retail Sales", "ISM Manufacturing PMI", "ISM Services PMI",
+    "FOMC Minutes", "Fed Chair Powell Speech",
+    "ECB Interest Rate Decision", "BOE Interest Rate Decision",
+    "BOJ Interest Rate Decision", "Trade Balance",
+    "Consumer Confidence", "Durable Goods Orders",
+    "PCE Price Index", "Core PCE Price Index",
+]
+_news_cache = {"data": None, "ts": None}
+
+def fetch_economic_calendar():
+    """Fetch today's economic events from Trading Economics."""
+    if not TE_KEY:
+        return []
+    # Cache for 30 min to avoid rate limits
+    now = datetime.utcnow()
+    if _news_cache["data"] is not None and _news_cache["ts"]:
+        if (now - _news_cache["ts"]).total_seconds() < 1800:
+            return _news_cache["data"]
+    try:
+        today = now.strftime("%Y-%m-%d")
+        parts = TE_KEY.split(":")
+        if len(parts) == 2:
+            auth = (parts[0], parts[1])  # Trading Economics uses basic auth
+        else:
+            auth = None
+        url = f"https://api.tradingeconomics.com/calendar?c={TE_KEY}&d1={today}&d2={today}"
+        r = requests.get(url, timeout=15)
+        if r.status_code == 200:
+            events = r.json() if isinstance(r.json(), list) else []
+            _news_cache["data"] = events
+            _news_cache["ts"] = now
+            return events
+        else:
+            print(f"  TE Calendar: HTTP {r.status_code}")
+            return []
+    except Exception as e:
+        print(f"  TE Calendar error: {e}")
+        return []
+
+def check_news_danger(symbol, events):
+    """
+    Check if high-impact news is within ±30 min window for this symbol.
+    Returns: (danger_level, event_name)
+      danger_level: 0 = safe, -10 = medium risk, -15 = high risk (skip trade)
+    """
+    if not events:
+        return 0, None
+    now = datetime.utcnow()
+    affected_currencies = SYMBOL_CURRENCIES.get(symbol, ["USD"])
+
+    for ev in events:
+        try:
+            ev_country = ev.get("Country", "")
+            ev_currency = ev.get("Currency", ev_country)
+            ev_name = ev.get("Event", "")
+            ev_importance = ev.get("Importance", 0)
+            ev_date_str = ev.get("Date", "")
+
+            # Only care about currencies that affect this symbol
+            if ev_currency not in affected_currencies:
+                continue
+
+            # Parse event time
+            if ev_date_str:
+                ev_time = pd.to_datetime(ev_date_str, utc=True, errors="coerce")
+                if pd.isna(ev_time):
+                    continue
+                ev_time = ev_time.to_pydatetime().replace(tzinfo=None)
+            else:
+                continue
+
+            mins_until = (ev_time - now).total_seconds() / 60
+
+            # Check if event is within danger window (30 min before to 15 min after)
+            if -15 <= mins_until <= 30:
+                # High-impact named events = full danger
+                is_high_impact = any(hi.lower() in ev_name.lower() for hi in HIGH_IMPACT_EVENTS)
+                if is_high_impact or ev_importance >= 3:
+                    return -15, f"⚠️ {ev_name} ({ev_currency}) in {int(mins_until)}min"
+                elif ev_importance >= 2:
+                    return -10, f"⚡ {ev_name} ({ev_currency}) in {int(mins_until)}min"
+        except Exception:
+            continue
+
+    return 0, None
 
 # Cooldown tracker
 _sent = {}
@@ -186,7 +287,7 @@ def score_to_grade(s):
     return "D"
 
 
-def scan_symbol(symbol):
+def scan_symbol(symbol, events=None):
     """Scan one symbol. Returns (score, grade, direction, strategy, details) or None."""
     try:
         df = add_indicators(fetch_bars(symbol, "15min", 260))
@@ -205,6 +306,9 @@ def scan_symbol(symbol):
 
         if pd.isna(atr) or atr <= 0:
             return None
+
+        # ── News danger check ──
+        news_penalty, news_event = check_news_danger(symbol, events or [])
 
         # Determine direction based on regime
         if regime in ("trend_up", "trend_down"):
@@ -241,6 +345,13 @@ def scan_symbol(symbol):
 
         rr = abs(tp2 - entry) / max(abs(entry - sl), 1e-9)
         score, breakdown, confluence, sess_name = score_setup(row, prev, df, direction, rr, symbol)
+
+        # ── Apply news penalty to final score ──
+        if news_penalty != 0:
+            breakdown["News"] = news_penalty
+            score = max(0, min(100, score + news_penalty))
+            print(f"    {symbol}: News penalty {news_penalty} → {news_event}")
+
         grade = score_to_grade(score)
 
         return {
@@ -259,6 +370,7 @@ def scan_symbol(symbol):
             "session": sess_name,
             "rsi": float(row["rsi14"]),
             "breakdown": breakdown,
+            "news_warning": news_event,
         }
     except Exception as e:
         print(f"  [{symbol}] Error: {e}")
@@ -290,6 +402,9 @@ def send_telegram(msg, channel_id=None):
 
 def format_signal_msg(sig):
     icon = "🟢" if sig["direction"] == "Buy" else "🔴"
+    news_line = ""
+    if sig.get("news_warning"):
+        news_line = f"\n🗞️ <b>NEWS:</b> {sig['news_warning']}\n"
     return (
         f"{icon} <b>{sig['grade']} SIGNAL — {sig['symbol']}</b>\n\n"
         f"Direction: <b>{sig['direction']}</b>\n"
@@ -303,7 +418,8 @@ def format_signal_msg(sig):
         f"TP2: <code>{fmt_price(sig['tp2'], sig['symbol'])}</code>\n"
         f"R:R: 1:{sig['rr']:.2f}\n"
         f"RSI: {sig['rsi']:.1f}\n"
-        f"Session: {sig['session']}\n\n"
+        f"Session: {sig['session']}\n"
+        f"{news_line}\n"
         f"⏰ {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}\n"
         f"📊 Alpha FX Hub"
     )
@@ -329,10 +445,19 @@ def run_scan():
         print("Market closed (Sunday)")
         return
 
+    # Fetch economic calendar once (cached 30 min)
+    events = fetch_economic_calendar()
+    if events:
+        print(f"  Loaded {len(events)} economic events for today")
+    elif TE_KEY:
+        print(f"  No economic events loaded (API issue or no events today)")
+    else:
+        print(f"  No TE_API_KEY — skipping news filter")
+
     signals = []
     for sym in SYMBOLS:
         print(f"  Scanning {sym}...")
-        result = scan_symbol(sym)
+        result = scan_symbol(sym, events)
         if result:
             print(f"    {sym}: {result['direction']} | Score {result['score']} ({result['grade']}) | {result['strategy']}")
             signals.append(result)

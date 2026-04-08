@@ -31,4 +31,5 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_PRIVATE_CHANNEL_ID: ${{ secrets.TELEGRAM_PRIVATE_CHANNEL_ID }}
           TELEGRAM_PUBLIC_CHANNEL_ID: ${{ secrets.TELEGRAM_PUBLIC_CHANNEL_ID }}
+          TE_API_KEY: ${{ secrets.TE_API_KEY }}
         run: python signal_scanner_bot.py
