@@ -206,14 +206,27 @@ def add_indicators(df):
     x["bb_width"] = (x["bb_upper"] - x["bb_lower"]) / x["bb_mid"]
     x["slope20"] = x["ema20"].diff(5)
     body = (x["close"] - x["open"]).abs()
+    full_range = x["high"] - x["low"]
     upper = x["high"] - x[["close", "open"]].max(axis=1)
     lower = x[["close", "open"]].min(axis=1) - x["low"]
+    # Classic patterns (strict)
     x["pin_bull"] = (lower > 2 * body) & (upper < 0.3 * body)
     x["pin_bear"] = (upper > 2 * body) & (lower < 0.3 * body)
     x["engulf_bull"] = (x["close"] > x["open"]) & (x["close"].shift() <= x["open"].shift()) & \
                        (x["close"] > x["open"].shift()) & (x["open"] < x["close"].shift())
     x["engulf_bear"] = (x["close"] < x["open"]) & (x["close"].shift() >= x["open"].shift()) & \
                        (x["close"] < x["open"].shift()) & (x["open"] > x["close"].shift())
+    # Additional patterns (relaxed)
+    x["hammer"] = (lower > 1.5 * body) & (upper < 0.5 * body) & (body > 0)
+    x["shooting_star"] = (upper > 1.5 * body) & (lower < 0.5 * body) & (body > 0)
+    x["doji"] = body < (full_range * 0.1)  # Very small body
+    x["bull_candle"] = (x["close"] > x["open"]) & (body > full_range * 0.6)  # Strong bullish
+    x["bear_candle"] = (x["close"] < x["open"]) & (body > full_range * 0.6)  # Strong bearish
+    # Momentum candles (3-bar)
+    x["three_bull"] = (x["close"] > x["open"]) & (x["close"].shift(1) > x["open"].shift(1)) & \
+                      (x["close"].shift(2) > x["open"].shift(2))
+    x["three_bear"] = (x["close"] < x["open"]) & (x["close"].shift(1) < x["open"].shift(1)) & \
+                      (x["close"].shift(2) < x["open"].shift(2))
     return x
 
 
@@ -228,43 +241,108 @@ def session_score(symbol, ts):
     h = ts.hour
     preferred = SESSIONS_PREF.get(symbol, ["London", "NewYork"])
     if 12 <= h < 16 and "Overlap" in preferred: return 10, "Overlap"
-    if 7 <= h < 16 and "London" in preferred: return 5, "London"
-    if 12 <= h < 21 and "NewYork" in preferred: return 5, "NewYork"
+    if 7 <= h < 16 and "London" in preferred: return 7, "London"
+    if 12 <= h < 21 and "NewYork" in preferred: return 7, "NewYork"
     if (h >= 22 or h < 7) and "Asian" in preferred: return 5, "Asian"
-    return 0, "Off-peak"
+    return 3, "Off-peak"
 
 
-# ── Scoring (V12 7-component) ──
+# ── Scoring (V12 recalibrated 8-component, max 100) ──
+# EMA(20) + Pullback(15) + MACD(15) + RSI(10) + Candle(10) + R:R(15) + Session(10) + Momentum(5)
 def score_setup(row, prev, df, direction, rr, symbol):
     bd = {}
-    if direction == "Buy":
-        bd["EMA"] = 20 if row["ema20"] > row["ema50"] > row["ema200"] else 10 if row["ema20"] > row["ema50"] else 0
-    else:
-        bd["EMA"] = 20 if row["ema20"] < row["ema50"] < row["ema200"] else 10 if row["ema20"] < row["ema50"] else 0
 
+    # 1. EMA Stack (max 20) — full stack, partial, or at least 20>50
+    if direction == "Buy":
+        if row["ema20"] > row["ema50"] > row["ema200"]:
+            bd["EMA"] = 20
+        elif row["ema20"] > row["ema50"]:
+            bd["EMA"] = 14
+        elif row["close"] > row["ema20"]:
+            bd["EMA"] = 8
+        else:
+            bd["EMA"] = 0
+    else:
+        if row["ema20"] < row["ema50"] < row["ema200"]:
+            bd["EMA"] = 20
+        elif row["ema20"] < row["ema50"]:
+            bd["EMA"] = 14
+        elif row["close"] < row["ema20"]:
+            bd["EMA"] = 8
+        else:
+            bd["EMA"] = 0
+
+    # 2. Pullback quality (max 15) — relaxed thresholds
     dist = abs(row["close"] - row["ema20"]) / max(row["atr14"], 1e-9)
-    bd["Pullback"] = 15 if dist <= 0.4 else 10 if dist <= 0.7 else 5 if dist <= 1.0 else 0
+    bd["Pullback"] = 15 if dist <= 0.5 else 12 if dist <= 0.8 else 8 if dist <= 1.2 else 4 if dist <= 2.0 else 0
 
+    # 3. MACD confirmation (max 15) — more partial credit
     if direction == "Buy":
-        bd["MACD"] = 15 if row["macd_hist"] > 0 and row["macd_hist"] > prev["macd_hist"] else 8 if row["macd_hist"] > 0 else 0
+        if row["macd_hist"] > 0 and row["macd_hist"] > prev["macd_hist"]:
+            bd["MACD"] = 15  # Positive & accelerating
+        elif row["macd_hist"] > 0:
+            bd["MACD"] = 10  # Positive
+        elif row["macd"] > row["macd_sig"]:
+            bd["MACD"] = 5   # MACD above signal (early cross)
+        else:
+            bd["MACD"] = 0
     else:
-        bd["MACD"] = 15 if row["macd_hist"] < 0 and row["macd_hist"] < prev["macd_hist"] else 8 if row["macd_hist"] < 0 else 0
+        if row["macd_hist"] < 0 and row["macd_hist"] < prev["macd_hist"]:
+            bd["MACD"] = 15
+        elif row["macd_hist"] < 0:
+            bd["MACD"] = 10
+        elif row["macd"] < row["macd_sig"]:
+            bd["MACD"] = 5
+        else:
+            bd["MACD"] = 0
 
+    # 4. RSI confirmation (max 10) — wider ranges
     rsi = row["rsi14"]
-    bd["RSI"] = 10 if 40 <= rsi <= 60 else 5 if 30 <= rsi <= 70 else 0
+    if direction == "Buy":
+        bd["RSI"] = 10 if 40 <= rsi <= 65 else 7 if 30 <= rsi <= 75 else 3 if rsi < 30 else 0
+    else:
+        bd["RSI"] = 10 if 35 <= rsi <= 60 else 7 if 25 <= rsi <= 70 else 3 if rsi > 70 else 0
 
+    # 5. Candle pattern (max 10) — many more patterns recognized
     candle = 0
-    if direction == "Buy" and (row.get("pin_bull", False) or row.get("engulf_bull", False)): candle = 10
-    if direction == "Sell" and (row.get("pin_bear", False) or row.get("engulf_bear", False)): candle = 10
+    if direction == "Buy":
+        if row.get("pin_bull") or row.get("engulf_bull"):
+            candle = 10  # Strong pattern
+        elif row.get("hammer") or row.get("bull_candle") or row.get("three_bull"):
+            candle = 7   # Good pattern
+        elif row["close"] > row["open"]:
+            candle = 3   # At least bullish candle
+    else:
+        if row.get("pin_bear") or row.get("engulf_bear"):
+            candle = 10
+        elif row.get("shooting_star") or row.get("bear_candle") or row.get("three_bear"):
+            candle = 7
+        elif row["close"] < row["open"]:
+            candle = 3   # At least bearish candle
     bd["Candle"] = candle
 
-    bd["R:R"] = 20 if rr >= 2.5 else 15 if rr >= 2.0 else 10 if rr >= 1.5 else 5 if rr >= 1.2 else 0
+    # 6. Risk:Reward (max 15) — more partial credit
+    bd["R:R"] = 15 if rr >= 2.5 else 12 if rr >= 2.0 else 10 if rr >= 1.5 else 7 if rr >= 1.2 else 4 if rr >= 1.0 else 0
 
+    # 7. Session timing (max 10)
     sess_pts, sess_name = session_score(symbol, row.get("time", pd.Timestamp.utcnow()))
     bd["Session"] = sess_pts
 
+    # 8. Momentum bonus (max 5) — trend strength from slope
+    slope = row.get("slope20", 0)
+    if slope and not pd.isna(slope):
+        slope_norm = abs(slope) / max(row["atr14"], 1e-9)
+        if direction == "Buy" and slope > 0:
+            bd["Momentum"] = 5 if slope_norm > 0.3 else 3 if slope_norm > 0.1 else 0
+        elif direction == "Sell" and slope < 0:
+            bd["Momentum"] = 5 if slope_norm > 0.3 else 3 if slope_norm > 0.1 else 0
+        else:
+            bd["Momentum"] = 0
+    else:
+        bd["Momentum"] = 0
+
     total = min(sum(bd.values()), 100)
-    confluence = sum(1 for k, v in bd.items() if k != "Session" and v > 0)
+    confluence = sum(1 for k, v in bd.items() if k not in ("Session", "Momentum") and v > 0)
     return total, bd, confluence, sess_name
 
 
@@ -459,7 +537,9 @@ def run_scan():
         print(f"  Scanning {sym}...")
         result = scan_symbol(sym, events)
         if result:
+            bd_str = " | ".join(f"{k}:{v}" for k, v in result["breakdown"].items())
             print(f"    {sym}: {result['direction']} | Score {result['score']} ({result['grade']}) | {result['strategy']}")
+            print(f"      Breakdown: {bd_str}")
             signals.append(result)
         else:
             print(f"    {sym}: No setup")

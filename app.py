@@ -582,14 +582,25 @@ def add_indicators(df:pd.DataFrame) -> pd.DataFrame:
     x["ll20"] = x["low"].rolling(20).min()
     x["slope20"] = x["ema20"].diff(5)
     body = (x["close"]-x["open"]).abs()
+    full_range = x["high"] - x["low"]
     upper = x["high"] - x[["close","open"]].max(axis=1)
     lower = x[["close","open"]].min(axis=1) - x["low"]
+    # Classic patterns (strict)
     x["pin_bull"] = (lower > 2*body) & (upper < 0.3*body)
     x["pin_bear"] = (upper > 2*body) & (lower < 0.3*body)
     x["engulf_bull"] = (x["close"]>x["open"]) & (x["close"].shift()<=x["open"].shift()) & \
                        (x["close"]>x["open"].shift()) & (x["open"]<x["close"].shift())
     x["engulf_bear"] = (x["close"]<x["open"]) & (x["close"].shift()>=x["open"].shift()) & \
                        (x["close"]<x["open"].shift()) & (x["open"]>x["close"].shift())
+    # Additional patterns (relaxed)
+    x["hammer"] = (lower > 1.5*body) & (upper < 0.5*body) & (body > 0)
+    x["shooting_star"] = (upper > 1.5*body) & (lower < 0.5*body) & (body > 0)
+    x["bull_candle"] = (x["close"]>x["open"]) & (body > full_range*0.6)
+    x["bear_candle"] = (x["close"]<x["open"]) & (body > full_range*0.6)
+    x["three_bull"] = (x["close"]>x["open"]) & (x["close"].shift(1)>x["open"].shift(1)) & \
+                      (x["close"].shift(2)>x["open"].shift(2))
+    x["three_bear"] = (x["close"]<x["open"]) & (x["close"].shift(1)<x["open"].shift(1)) & \
+                      (x["close"].shift(2)<x["open"].shift(2))
     return x
 
 def trend_bias(df:pd.DataFrame) -> str:
@@ -668,50 +679,102 @@ class Plan:
 # ============================================================
 def _score_plan(row:pd.Series, prev_row:pd.Series, df:pd.DataFrame,
                 direction:str, rr:float, symbol:str) -> Tuple[int, Dict[str,int], int, int]:
-    """Returns (total_score, breakdown, confluence, session_pts)."""
+    """Returns (total_score, breakdown, confluence, session_pts).
+    Recalibrated 8-component scoring: EMA(20)+Pullback(15)+MACD(15)+RSI(10)+Candle(10)+R:R(15)+Session(10)+Momentum(5)=100
+    """
     bd: Dict[str,int] = {}
 
-    # 1. EMA stack (20 pts)
+    # 1. EMA Stack (max 20) — full stack, partial, or price>ema20
     if direction == "Buy":
-        bd["EMA Stack"] = 20 if row["ema20"]>row["ema50"]>row["ema200"] else \
-                          10 if row["ema20"]>row["ema50"] else 0
+        if row["ema20"]>row["ema50"]>row["ema200"]:
+            bd["EMA Stack"] = 20
+        elif row["ema20"]>row["ema50"]:
+            bd["EMA Stack"] = 14
+        elif row["close"]>row["ema20"]:
+            bd["EMA Stack"] = 8
+        else:
+            bd["EMA Stack"] = 0
     else:
-        bd["EMA Stack"] = 20 if row["ema20"]<row["ema50"]<row["ema200"] else \
-                          10 if row["ema20"]<row["ema50"] else 0
+        if row["ema20"]<row["ema50"]<row["ema200"]:
+            bd["EMA Stack"] = 20
+        elif row["ema20"]<row["ema50"]:
+            bd["EMA Stack"] = 14
+        elif row["close"]<row["ema20"]:
+            bd["EMA Stack"] = 8
+        else:
+            bd["EMA Stack"] = 0
 
-    # 2. Pullback (15 pts)
+    # 2. Pullback quality (max 15) — relaxed thresholds
     dist = abs(row["close"]-row["ema20"])/max(row["atr14"],1e-9)
-    bd["Pullback"] = 15 if dist<=0.4 else 10 if dist<=0.7 else 5 if dist<=1.0 else 0
+    bd["Pullback"] = 15 if dist<=0.5 else 12 if dist<=0.8 else 8 if dist<=1.2 else 4 if dist<=2.0 else 0
 
-    # 3. MACD (15 pts)
+    # 3. MACD confirmation (max 15) — more partial credit
     if direction == "Buy":
-        bd["MACD"] = 15 if row["macd_hist"]>0 and row["macd_hist"]>prev_row["macd_hist"] else \
-                      8 if row["macd_hist"]>0 else 0
+        if row["macd_hist"]>0 and row["macd_hist"]>prev_row["macd_hist"]:
+            bd["MACD"] = 15
+        elif row["macd_hist"]>0:
+            bd["MACD"] = 10
+        elif row["macd"]>row["macd_sig"]:
+            bd["MACD"] = 5
+        else:
+            bd["MACD"] = 0
     else:
-        bd["MACD"] = 15 if row["macd_hist"]<0 and row["macd_hist"]<prev_row["macd_hist"] else \
-                      8 if row["macd_hist"]<0 else 0
+        if row["macd_hist"]<0 and row["macd_hist"]<prev_row["macd_hist"]:
+            bd["MACD"] = 15
+        elif row["macd_hist"]<0:
+            bd["MACD"] = 10
+        elif row["macd"]<row["macd_sig"]:
+            bd["MACD"] = 5
+        else:
+            bd["MACD"] = 0
 
-    # 4. RSI (10 pts)
+    # 4. RSI confirmation (max 10) — directional
     rsi = row["rsi14"]
-    bd["RSI"] = 10 if 40<=rsi<=60 else 5 if 30<=rsi<=70 else 0
+    if direction == "Buy":
+        bd["RSI"] = 10 if 40<=rsi<=65 else 7 if 30<=rsi<=75 else 3 if rsi<30 else 0
+    else:
+        bd["RSI"] = 10 if 35<=rsi<=60 else 7 if 25<=rsi<=70 else 3 if rsi>70 else 0
 
-    # 5. Candle pattern (10 pts)
+    # 5. Candle pattern (max 10) — many patterns recognized
     candle = 0
-    if direction=="Buy" and (row.get("pin_bull",False) or row.get("engulf_bull",False)):
-        candle = 10
-    if direction=="Sell" and (row.get("pin_bear",False) or row.get("engulf_bear",False)):
-        candle = 10
+    if direction == "Buy":
+        if row.get("pin_bull",False) or row.get("engulf_bull",False):
+            candle = 10
+        elif row.get("hammer",False) or row.get("bull_candle",False) or row.get("three_bull",False):
+            candle = 7
+        elif row["close"]>row["open"]:
+            candle = 3
+    else:
+        if row.get("pin_bear",False) or row.get("engulf_bear",False):
+            candle = 10
+        elif row.get("shooting_star",False) or row.get("bear_candle",False) or row.get("three_bear",False):
+            candle = 7
+        elif row["close"]<row["open"]:
+            candle = 3
     bd["Candle"] = candle
 
-    # 6. R:R (20 pts)
-    bd["R:R"] = 20 if rr>=2.5 else 15 if rr>=2.0 else 10 if rr>=1.5 else 5 if rr>=1.2 else 0
+    # 6. R:R (max 15) — more partial credit
+    bd["R:R"] = 15 if rr>=2.5 else 12 if rr>=2.0 else 10 if rr>=1.5 else 7 if rr>=1.2 else 4 if rr>=1.0 else 0
 
-    # 7. Session (10 pts)
+    # 7. Session timing (max 10)
     sess_pts, _ = session_score(symbol, row.get("time", pd.Timestamp.utcnow()))
     bd["Session"] = sess_pts
 
+    # 8. Momentum bonus (max 5)
+    slope = row.get("slope20",0)
+    if slope and not pd.isna(slope):
+        slope_norm = abs(slope)/max(row["atr14"],1e-9)
+        if direction=="Buy" and slope>0:
+            bd["Momentum"] = 5 if slope_norm>0.3 else 3 if slope_norm>0.1 else 0
+        elif direction=="Sell" and slope<0:
+            bd["Momentum"] = 5 if slope_norm>0.3 else 3 if slope_norm>0.1 else 0
+        else:
+            bd["Momentum"] = 0
+    else:
+        bd["Momentum"] = 0
+
     total = sum(bd.values())
-    confluence = sum(1 for k,v in bd.items() if k!="Session" and v>0)
+    confluence = sum(1 for k,v in bd.items() if k not in ("Session","Momentum") and v>0)
     return min(total,100), bd, confluence, sess_pts
 
 # ============================================================
