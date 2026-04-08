@@ -1495,7 +1495,7 @@ def build_overview_row(sym, balance, risk_pct, td_key):
 # TELEGRAM AUTO-SEND (A / A+ signals — score >= 80)
 # ============================================================
 def _maybe_send_telegram(plan: Plan, notifier):
-    """Auto-send Telegram for A/A+ signals (score>=80) with 15-min cooldown."""
+    """Auto-send Telegram for A/A+ signals (score>=80) with 30-min cooldown per symbol."""
     if not notifier:
         return
     if plan.final_score < 80 or plan.execution_status != "Ready to Enter":
@@ -1503,13 +1503,14 @@ def _maybe_send_telegram(plan: Plan, notifier):
     if plan.direction not in ("Buy", "Sell"):
         return
 
-    cooldown_key = f"{plan.symbol}_{plan.direction}_{plan.final_score}"
+    # Cooldown by symbol+direction ONLY (not score) to prevent spam when score fluctuates
+    cooldown_key = f"{plan.symbol}_{plan.direction}"
     sent_signals = st.session_state.get("tg_sent_signals", {})
     now = datetime.utcnow()
 
     if cooldown_key in sent_signals:
         last_sent = sent_signals[cooldown_key]
-        if (now - last_sent).total_seconds() < 900:  # 15-min cooldown
+        if (now - last_sent).total_seconds() < 1800:  # 30-min cooldown
             return
 
     try:
