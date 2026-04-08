@@ -31,7 +31,8 @@ TE_KEY = os.environ.get("TE_API_KEY", "")
 
 SYMBOLS = ["XAUUSD", "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD"]
 API_MAP = {"EURUSD": "EUR/USD", "GBPUSD": "GBP/USD", "USDJPY": "USD/JPY",
-           "XAUUSD": "XAU/USD", "AUDUSD": "AUD/USD", "USDCAD": "USD/CAD"}
+           "XAUUSD": "XAU/USD", "AUDUSD": "AUD/USD", "USDCAD": "USD/CAD",
+           "USDCHF": "USD/CHF"}
 PIP_MAP = {"USDJPY": 0.01, "XAUUSD": 0.1}
 PIP_VAL = {"USDJPY": 9.1, "XAUUSD": 10.0}
 FOREX = {"EURUSD", "GBPUSD", "USDJPY", "XAUUSD", "AUDUSD", "USDCAD"}
@@ -534,6 +535,101 @@ def format_signal_msg(sig):
     )
 
 
+# ── Market-Wide Sentiment (crash/panic detection) ──
+_SENTIMENT_SYMBOLS = ["EURUSD", "GBPUSD", "AUDUSD", "USDJPY", "USDCHF", "USDCAD", "XAUUSD"]
+
+def get_market_sentiment():
+    """Check all major pairs for market-wide risk-off / risk-on."""
+    bearish = 0
+    bullish = 0
+    details = {}
+
+    for sym in _SENTIMENT_SYMBOLS:
+        try:
+            api_sym = API_MAP.get(sym, sym[:3]+"/"+sym[3:])
+            resp = requests.get("https://api.twelvedata.com/time_series", params={
+                "symbol": api_sym, "interval": "15min", "outputsize": 60,
+                "timezone": "UTC", "order": "ASC", "apikey": TD_KEY
+            }, timeout=12)
+            v = resp.json().get("values", [])
+            if len(v) < 30:
+                details[sym] = "INSUFFICIENT"
+                continue
+            closes = [float(r["close"]) for r in v]
+            highs = [float(r["high"]) for r in v]
+            lows = [float(r["low"]) for r in v]
+
+            # EMA20, EMA50
+            c = pd.Series(closes)
+            ema20 = c.ewm(span=20, adjust=False).mean().iloc[-1]
+            ema50 = c.ewm(span=50, adjust=False).mean().iloc[-1]
+            ema20_prev = c.ewm(span=20, adjust=False).mean().iloc[-3]
+            price = closes[-1]
+
+            # RSI14
+            delta = c.diff()
+            gain = delta.clip(lower=0).rolling(14).mean().iloc[-1]
+            loss = (-delta.clip(upper=0)).rolling(14).mean().iloc[-1]
+            rsi = 100 - (100 / (1 + gain / max(loss, 1e-9)))
+
+            # MACD histogram
+            ema12 = c.ewm(span=12, adjust=False).mean()
+            ema26 = c.ewm(span=26, adjust=False).mean()
+            macd_h = float((ema12 - ema26).ewm(span=9, adjust=False).mean().iloc[-1])
+            macd_h = float((ema12 - ema26).iloc[-1]) - macd_h
+
+            below_ema20 = price < ema20
+            below_ema50 = price < ema50
+            ema20_falling = ema20 < ema20_prev
+            rsi_oversold = rsi < 40
+            macd_bearish = macd_h < 0
+            bear_signals = sum([below_ema20, below_ema50, ema20_falling, rsi_oversold, macd_bearish])
+            bull_signals = sum([not below_ema20, not below_ema50, not ema20_falling, rsi > 60, macd_h > 0])
+
+            is_usd_quote = sym in ("USDJPY", "USDCHF", "USDCAD")
+
+            if is_usd_quote:
+                if bull_signals >= 3:
+                    bearish += 1
+                    details[sym] = "USD_STRONG"
+                elif bear_signals >= 3:
+                    bullish += 1
+                    details[sym] = "USD_WEAK"
+                else:
+                    details[sym] = "NEUTRAL"
+            elif sym == "XAUUSD":
+                if bull_signals >= 3:
+                    bearish += 1
+                    details[sym] = "GOLD_RALLY"
+                elif bear_signals >= 3:
+                    bullish += 1
+                    details[sym] = "GOLD_SELL"
+                else:
+                    details[sym] = "NEUTRAL"
+            else:
+                if bear_signals >= 3:
+                    bearish += 1
+                    details[sym] = "BEARISH"
+                elif bull_signals >= 3:
+                    bullish += 1
+                    details[sym] = "BULLISH"
+                else:
+                    details[sym] = "NEUTRAL"
+            time.sleep(0.5)
+        except Exception as e:
+            details[sym] = f"ERR:{e}"
+
+    if bearish >= 5:
+        return {"sentiment": "RISK_OFF", "penalty_buy": -20, "penalty_sell": 0, "bearish": bearish, "bullish": bullish, "details": details}
+    elif bearish >= 4:
+        return {"sentiment": "RISK_OFF", "penalty_buy": -12, "penalty_sell": 0, "bearish": bearish, "bullish": bullish, "details": details}
+    elif bullish >= 5:
+        return {"sentiment": "RISK_ON", "penalty_buy": 0, "penalty_sell": -20, "bearish": bearish, "bullish": bullish, "details": details}
+    elif bullish >= 4:
+        return {"sentiment": "RISK_ON", "penalty_buy": 0, "penalty_sell": -12, "bearish": bearish, "bullish": bullish, "details": details}
+    return {"sentiment": "MIXED", "penalty_buy": 0, "penalty_sell": 0, "bearish": bearish, "bullish": bullish, "details": details}
+
+
 # ── Main Scanner ──
 def run_scan():
     print(f"\n{'='*50}")
@@ -563,11 +659,31 @@ def run_scan():
     else:
         print(f"  No TE_API_KEY — skipping news filter")
 
+    # Market-wide sentiment check
+    print(f"\n  Checking market-wide sentiment...")
+    mkt = get_market_sentiment()
+    print(f"  Market Sentiment: {mkt['sentiment']} (Bearish:{mkt['bearish']}/7, Bullish:{mkt['bullish']}/7)")
+    for s_sym, s_detail in mkt["details"].items():
+        print(f"    {s_sym}: {s_detail}")
+    if mkt["sentiment"] == "RISK_OFF":
+        print(f"  ⚠️ RISK-OFF detected — Buy signals penalized by {mkt['penalty_buy']}")
+    elif mkt["sentiment"] == "RISK_ON":
+        print(f"  ⚠️ RISK-ON detected — Sell signals penalized by {mkt['penalty_sell']}")
+
     signals = []
     for sym in SYMBOLS:
         print(f"  Scanning {sym}...")
         result = scan_symbol(sym, events)
         if result:
+            # Apply market sentiment penalty
+            if result["direction"] == "Buy":
+                result["score"] = max(0, min(100, result["score"] + mkt["penalty_buy"]))
+            elif result["direction"] == "Sell":
+                result["score"] = max(0, min(100, result["score"] + mkt["penalty_sell"]))
+            result["grade"] = score_to_grade(result["score"])
+            if mkt["sentiment"] != "MIXED":
+                result["breakdown"]["MKT"] = mkt["penalty_buy"] if result["direction"] == "Buy" else mkt["penalty_sell"]
+
             bd_str = " | ".join(f"{k}:{v}" for k, v in result["breakdown"].items())
             print(f"    {sym}: {result['direction']} | Score {result['score']} ({result['grade']}) | {result['strategy']}")
             print(f"      Breakdown: {bd_str}")
@@ -588,13 +704,13 @@ def run_scan():
     print(f"{'!'*50}")
 
     for sig in alerts:
-        # Cooldown check (15 min per symbol+direction)
+        # Cooldown check (30 min per symbol+direction)
         cooldown_key = f"{sig['symbol']}_{sig['direction']}"
         now_ts = datetime.utcnow()
         if cooldown_key in _sent:
             elapsed = (now_ts - _sent[cooldown_key]).total_seconds()
-            if elapsed < 900:
-                print(f"  [{sig['symbol']}] Cooldown ({int(900 - elapsed)}s remaining)")
+            if elapsed < 1800:  # 30-min cooldown
+                print(f"  [{sig['symbol']}] Cooldown ({int(1800 - elapsed)}s remaining)")
                 continue
 
         msg = format_signal_msg(sig)

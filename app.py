@@ -670,6 +670,15 @@ class Plan:
     news_ok:bool = False
     final_score:int = 20
     final_grade:str = "D"
+    # Market sentiment
+    market_sentiment:str = "UNKNOWN"
+    market_bearish:int = 0
+    market_bullish:int = 0
+    sentiment_adj:int = 0
+    # TE calendar
+    te_penalty:int = 0
+    te_warning:str = ""
+    te_upcoming:List[str] = field(default_factory=list)
 
     def to_dict(self):
         return self.__dict__.copy()
@@ -1081,6 +1090,123 @@ def _xau_plan(df5:pd.DataFrame, df15:pd.DataFrame, df1h:pd.DataFrame, symbol:str
     ]
     return p2
 
+# ============================================================
+# MARKET-WIDE SENTIMENT (crash / panic detection)
+# ============================================================
+_SENTIMENT_SYMBOLS = ["EURUSD","GBPUSD","AUDUSD","USDJPY","USDCHF","USDCAD","XAUUSD"]
+
+@st.cache_data(ttl=120)
+def get_market_sentiment(td_key: str) -> dict:
+    """Check all major pairs to detect market-wide risk-off / risk-on.
+
+    Returns dict with:
+      - bearish_count: how many symbols show strong bearish momentum
+      - bullish_count: how many symbols show strong bullish momentum
+      - sentiment: "RISK_OFF", "RISK_ON", or "MIXED"
+      - penalty_buy: score penalty to apply to Buy signals during risk-off
+      - penalty_sell: score penalty to apply to Sell signals during risk-on
+      - details: per-symbol momentum info
+    """
+    details = {}
+    bearish = 0
+    bullish = 0
+
+    for sym in _SENTIMENT_SYMBOLS:
+        try:
+            df = fetch_bars(sym, "15min", 60, td_key)
+            df = add_indicators(df)
+            row = df.iloc[-1]
+            # Check multiple bearish/bullish signals
+            price = float(row["close"])
+            ema20 = float(row["ema20"])
+            ema50 = float(row["ema50"])
+            rsi = float(row.get("rsi14", 50))
+            macd_h = float(row.get("macd_hist", 0))
+
+            # For USD pairs (USDJPY, USDCHF, USDCAD), USD strength = price going UP
+            # For non-USD pairs (EURUSD, GBPUSD, AUDUSD), risk-off = price going DOWN
+            # For XAUUSD, panic = gold going UP (safe haven)
+            is_usd_quote = sym in ("USDJPY", "USDCHF", "USDCAD")
+
+            # Calculate momentum: price vs ema20, ema20 slope, RSI, MACD
+            below_ema20 = price < ema20
+            below_ema50 = price < ema50
+            ema20_falling = float(row["ema20"]) < float(df.iloc[-3]["ema20"]) if len(df) > 3 else False
+            rsi_oversold = rsi < 40
+            macd_bearish = macd_h < 0
+
+            # Count bearish signals for this symbol
+            bear_signals = sum([below_ema20, below_ema50, ema20_falling, rsi_oversold, macd_bearish])
+            bull_signals = sum([not below_ema20, not below_ema50, not ema20_falling, rsi > 60, macd_h > 0])
+
+            if is_usd_quote:
+                # USD quote pairs: price UP = USD strong = risk-off for non-USD
+                if bull_signals >= 3:
+                    bearish += 1  # USD strength = risk-off
+                    details[sym] = "USD_STRONG"
+                elif bear_signals >= 3:
+                    bullish += 1
+                    details[sym] = "USD_WEAK"
+                else:
+                    details[sym] = "NEUTRAL"
+            elif sym == "XAUUSD":
+                # Gold UP = panic/risk-off
+                if bull_signals >= 3:
+                    bearish += 1  # Gold rallying = fear
+                    details[sym] = "GOLD_RALLY"
+                elif bear_signals >= 3:
+                    bullish += 1
+                    details[sym] = "GOLD_SELL"
+                else:
+                    details[sym] = "NEUTRAL"
+            else:
+                # Standard pairs: price DOWN = risk-off
+                if bear_signals >= 3:
+                    bearish += 1
+                    details[sym] = "BEARISH"
+                elif bull_signals >= 3:
+                    bullish += 1
+                    details[sym] = "BULLISH"
+                else:
+                    details[sym] = "NEUTRAL"
+        except Exception:
+            details[sym] = "ERR"
+
+    total = len(_SENTIMENT_SYMBOLS)
+    # Risk-off: 5+ out of 7 symbols showing bearish (or USD strong / gold rally)
+    # Risk-on: 5+ out of 7 showing bullish
+    if bearish >= 5:
+        sentiment = "RISK_OFF"
+        penalty_buy = -20   # Heavy penalty on Buy signals
+        penalty_sell = 0
+    elif bearish >= 4:
+        sentiment = "RISK_OFF"
+        penalty_buy = -12
+        penalty_sell = 0
+    elif bullish >= 5:
+        sentiment = "RISK_ON"
+        penalty_buy = 0
+        penalty_sell = -20
+    elif bullish >= 4:
+        sentiment = "RISK_ON"
+        penalty_buy = 0
+        penalty_sell = -12
+    else:
+        sentiment = "MIXED"
+        penalty_buy = 0
+        penalty_sell = 0
+
+    return {
+        "bearish_count": bearish,
+        "bullish_count": bullish,
+        "total": total,
+        "sentiment": sentiment,
+        "penalty_buy": penalty_buy,
+        "penalty_sell": penalty_sell,
+        "details": details,
+    }
+
+
 def select_plan(symbol:str, interval:str, bars:int, td_key:str) -> Tuple[pd.DataFrame,Plan]:
     s = norm(symbol)
     if s == "XAUUSD":
@@ -1120,12 +1246,39 @@ def finalize_plan(plan:Plan, balance:float, risk_pct:float) -> Plan:
     plan.te_warning = te_warning
     plan.te_upcoming = te_upcoming
     total_news_adj = plan.news_adj + te_penalty
+
+    # ── Market-wide sentiment filter (crash/panic detection) ──
+    try:
+        mkt_sent = get_market_sentiment(get_td_key())
+        plan.market_sentiment = mkt_sent["sentiment"]
+        plan.market_bearish = mkt_sent["bearish_count"]
+        plan.market_bullish = mkt_sent["bullish_count"]
+        if plan.direction == "Buy":
+            sentiment_adj = mkt_sent["penalty_buy"]
+        elif plan.direction == "Sell":
+            sentiment_adj = mkt_sent["penalty_sell"]
+        else:
+            sentiment_adj = 0
+        total_news_adj += sentiment_adj
+        plan.sentiment_adj = sentiment_adj
+    except Exception:
+        plan.market_sentiment = "UNKNOWN"
+        plan.market_bearish = 0
+        plan.market_bullish = 0
+        plan.sentiment_adj = 0
+
     plan.final_score = int(max(0,min(100,plan.setup_score+total_news_adj)))
     plan.final_grade = score_to_grade(plan.final_score)
+
+    # Block execution during high-risk conditions
     if te_penalty <= -15 and plan.execution_status=="Ready to Enter":
         plan.execution_status="HIGH NEWS RISK"
     elif plan.news_risk=="HIGH" and plan.execution_status=="Ready to Enter":
         plan.execution_status="HIGH NEWS RISK"
+    elif getattr(plan, 'market_sentiment', '') == "RISK_OFF" and plan.direction == "Buy" and plan.execution_status == "Ready to Enter":
+        plan.execution_status = "RISK OFF — WAIT"
+    elif getattr(plan, 'market_sentiment', '') == "RISK_ON" and plan.direction == "Sell" and plan.execution_status == "Ready to Enter":
+        plan.execution_status = "RISK ON — WAIT"
     return plan
 
 # ============================================================
@@ -1712,6 +1865,14 @@ border-radius:12px;padding:20px 32px;box-shadow:0 8px 32px rgba(0,0,0,0.6);text-
                 f"<div style='font-size:15px;font-weight:700;color:{col};font-family:Space Mono,monospace;'>{val}</div></div>")
 
     adj_str = ("+" + str(plan.news_adj)) if plan.news_adj >= 0 else str(plan.news_adj)
+    # Market sentiment display
+    mkt_sent = getattr(plan, 'market_sentiment', 'UNKNOWN')
+    mkt_bear = getattr(plan, 'market_bearish', 0)
+    mkt_bull = getattr(plan, 'market_bullish', 0)
+    sent_adj = getattr(plan, 'sentiment_adj', 0)
+    sent_col = "#ef4444" if mkt_sent == "RISK_OFF" else "#10b981" if mkt_sent == "RISK_ON" else "#f59e0b"
+    sent_label = f"{mkt_sent}" if mkt_sent != "UNKNOWN" else "—"
+    sent_adj_str = f"{sent_adj:+d}" if sent_adj != 0 else "0"
     st.markdown(f"""<div style='display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin:14px 0;'>
 {kpi("STRATEGY", plan.strategy[:18], "#00d4aa")}
 {kpi("TECH", str(plan.setup_score), grade_color(plan.setup_grade))}
@@ -1720,13 +1881,14 @@ border-radius:12px;padding:20px 32px;box-shadow:0 8px 32px rgba(0,0,0,0.6);text-
 {kpi("GRADE", plan.final_grade, gc)}
 {kpi("CONFLUENCE", f"{plan.confluence_count}/6", conf_col)}
 </div>
-<div style='display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin:0 0 14px;'>
+<div style='display:grid;grid-template-columns:repeat(7,1fr);gap:8px;margin:0 0 14px;'>
 {kpi("SESSION", plan.session_label[:14], "#8b9ab0")}
 {kpi("NEWS RISK", plan.news_risk, news_col)}
 {kpi("DIRECTION", plan.direction, dir_col)}
 {kpi("R:R", fmt_rr(plan.rr), "#a78bfa")}
 {kpi("RSI14", rsi_val, rsi_col)}
 {kpi("LOT", fmt_num(plan.suggested_lot, 3), "#00d4aa")}
+{kpi("MARKET", f"{sent_label} ({sent_adj_str})", sent_col)}
 </div>""", unsafe_allow_html=True)
     st.markdown("---")
 
