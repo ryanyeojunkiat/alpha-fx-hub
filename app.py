@@ -1742,6 +1742,88 @@ def render_live(symbol, interval, bars, balance, risk_pct, notifier):
              "good" if plan.execution_status == "Ready to Enter" else "bad" if "HIGH NEWS" in plan.execution_status else "warn"),
         ])
 
+        # ── GROK AI CHAT ──
+        render_grok_chat(plan, df, symbol, price)
+
+
+def render_grok_chat(plan: Plan, df: pd.DataFrame, symbol: str, current_price: float):
+    """Interactive Grok AI chat panel — user asks, Grok sees the full chart context."""
+    xai_key = get_xai_key()
+    st.markdown("<div class='panel'><div class='mono-title'>GROK AI CHAT</div>", unsafe_allow_html=True)
+
+    if not xai_key:
+        st.markdown("<div style='font-size:12px;color:#4a5568;'>Add Grok API key in sidebar to enable AI chat</div></div>", unsafe_allow_html=True)
+        return
+
+    # Initialize chat history
+    chat_key = f"grok_chat_{symbol}"
+    if chat_key not in st.session_state:
+        st.session_state[chat_key] = []
+
+    # Display chat history
+    for msg in st.session_state[chat_key]:
+        role_col = "#00d4aa" if msg["role"] == "assistant" else "#c7d2fe"
+        role_label = "GROK" if msg["role"] == "assistant" else "YOU"
+        safe_text = msg["content"].replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+        st.markdown(f"<div style='margin:6px 0;padding:8px 10px;background:rgba(255,255,255,0.03);border-radius:6px;border-left:2px solid {role_col};'>"
+                    f"<span style='font-size:10px;color:{role_col};font-weight:600;'>{role_label}</span><br>"
+                    f"<span style='font-size:12px;color:#e8edf2;'>{safe_text}</span></div>", unsafe_allow_html=True)
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # Chat input
+    user_msg = st.text_input("Ask Grok about the chart...", key=f"grok_input_{symbol}", placeholder="e.g. Should I buy now? What's the trend?")
+
+    if st.button("Send", key=f"grok_send_{symbol}") and user_msg.strip():
+        row = df.iloc[-1]
+        recent_bars = df.tail(8)[["open","high","low","close"]].round(5).to_string(index=False)
+
+        # Build full context of what the user sees on screen
+        context = (
+            f"Current symbol: {SYMBOL_NAMES.get(symbol, symbol)} ({symbol})\n"
+            f"Price: {fmt_price(current_price, symbol)} | Spread: MT5 live\n"
+            f"Strategy: {plan.strategy} | Regime: {plan.regime}\n"
+            f"Direction: {plan.direction} | Score: {plan.setup_score}/100 ({plan.setup_grade})\n"
+            f"Confluence: {plan.confluence_count}/6\n"
+            f"Entry: {fmt_price(plan.entry, symbol)} | SL: {fmt_price(plan.sl, symbol)}\n"
+            f"TP1: {fmt_price(plan.tp1, symbol)} | TP2: {fmt_price(plan.tp2, symbol)}\n"
+            f"R:R: {fmt_rr(plan.rr)} | RSI: {fmt_num(row.get('rsi14'), 1)}\n"
+            f"MACD Hist: {fmt_num(row.get('macd_hist'), 5)} | EMA20: {fmt_price(row.get('ema20'), symbol)}\n"
+            f"EMA50: {fmt_price(row.get('ema50'), symbol)} | EMA200: {fmt_price(row.get('ema200'), symbol)}\n"
+            f"BB Upper: {fmt_price(row.get('bb_upper'), symbol)} | BB Lower: {fmt_price(row.get('bb_lower'), symbol)}\n"
+            f"ATR14: {fmt_num(row.get('atr14'), 5)}\n"
+            f"News Risk: {plan.news_risk} | News Bias: {plan.news_bias}\n"
+            f"Session: {plan.session_label}\n"
+            f"Score Breakdown: {plan.score_breakdown}\n"
+            f"Last 8 candles (15min):\n{recent_bars}\n"
+        )
+
+        # Build messages with history
+        messages = [
+            {"role": "system", "content": (
+                "You are Grok, a professional forex/gold trading analyst embedded in Alpha FX Hub. "
+                "The trader is watching a live chart and asking you questions. You can see all their indicators and data below. "
+                "Be concise (2-5 sentences), direct, and actionable. Use trading language. "
+                "If they ask about entries, reference specific price levels. "
+                "Always consider the score, R:R, confluence, and news risk in your answers.\n\n"
+                f"CURRENT CHART DATA:\n{context}"
+            )}
+        ]
+        # Add chat history (last 6 messages to keep context manageable)
+        for msg in st.session_state[chat_key][-6:]:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+        messages.append({"role": "user", "content": user_msg})
+
+        with st.spinner("Grok thinking..."):
+            reply = _grok(messages, max_tokens=400, temperature=0.3, api_key=xai_key)
+
+        if reply:
+            st.session_state[chat_key].append({"role": "user", "content": user_msg})
+            st.session_state[chat_key].append({"role": "assistant", "content": reply})
+            st.rerun()
+        else:
+            st.error("Grok didn't respond. Check API key.")
+
 
 # ============================================================
 # BACKTEST ENGINE
