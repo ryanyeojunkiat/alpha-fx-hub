@@ -1110,11 +1110,11 @@ def render_score_panel(plan:Plan, df:pd.DataFrame, active_entry=None, active_sl=
         {conf_dots}
         <span style='font-size:10px;color:{conf_color};font-family:Space Mono,monospace;'> {filled}/{total}</span>
       </div>
-      {bd_html}
-      <div style='font-size:11px;color:#8b9ab0;border-top:1px solid rgba(255,255,255,0.05);padding-top:6px;margin-top:6px;'>
-        <b style='color:#e8edf2;'>Session:</b> {plan.session_label}
-      </div>
-    </div>""",unsafe_allow_html=True)
+{bd_html}
+<div style='font-size:11px;color:#8b9ab0;border-top:1px solid rgba(255,255,255,0.05);padding-top:6px;margin-top:6px;'>
+<b style='color:#e8edf2;'>Session:</b> {plan.session_label} | <b style='color:#e8edf2;'>MTF:</b> {'Aligned' if plan.mtf_aligned else 'Conflict'}
+</div>
+</div>""",unsafe_allow_html=True)
 
     live_health = None
     if active_entry and active_sl and active_dir:
@@ -1391,6 +1391,41 @@ def render_live(symbol, interval, bars, balance, risk_pct, notifier):
     # ── MT5 open positions ──
     mt5_positions = fetch_mt5_positions(_ma_tok, _ma_acc) if (_ma_tok and _ma_acc) else []
 
+    # ── SIGNAL OVERVIEW DASHBOARD (all symbols at a glance) ──
+    st.markdown("<div class='mono-title' style='font-size:13px;margin-bottom:6px;'>SIGNAL OVERVIEW — ALL SYMBOLS</div>", unsafe_allow_html=True)
+    overview_syms = [s for s in INTERNAL_SYMBOLS if s != symbol][:6]  # top 6 other symbols
+    ov_cols = st.columns(min(len(overview_syms) + 1, 7))
+    # Current symbol first (highlighted)
+    with ov_cols[0]:
+        dir_icon = "BUY" if plan.direction == "Buy" else "SELL" if plan.direction == "Sell" else "WAIT"
+        dir_c = "#10b981" if plan.direction == "Buy" else "#ef4444" if plan.direction == "Sell" else "#f59e0b"
+        gc_ov = grade_color(plan.final_grade)
+        st.markdown(f"<div style='background:#0d1117;border:2px solid {dir_c};border-radius:8px;padding:10px;text-align:center;'>"
+                    f"<div style='font-size:12px;font-weight:700;color:#00d4aa;'>{symbol}</div>"
+                    f"<div style='font-size:18px;font-weight:700;color:{dir_c};margin:4px 0;'>{dir_icon}</div>"
+                    f"<div style='font-size:11px;color:{gc_ov};'>{plan.final_score} {plan.final_grade}</div>"
+                    f"<div style='font-size:10px;color:#8b9ab0;'>{plan.strategy[:12]}</div></div>", unsafe_allow_html=True)
+    # Other symbols
+    for idx, ov_sym in enumerate(overview_syms):
+        with ov_cols[idx + 1]:
+            try:
+                ov_row = build_overview_row(ov_sym, balance, risk_pct, get_td_key())
+                ov_dir = ov_row.get("Signal", "—")
+                ov_dir_c = "#10b981" if ov_dir == "Buy" else "#ef4444" if ov_dir == "Sell" else "#f59e0b"
+                ov_grade = ov_row.get("Grade", "D")
+                ov_gc = grade_color(ov_grade)
+                ov_label = "BUY" if ov_dir == "Buy" else "SELL" if ov_dir == "Sell" else "WAIT"
+                st.markdown(f"<div style='background:#0d1117;border:1px solid rgba(255,255,255,0.07);border-radius:8px;padding:10px;text-align:center;'>"
+                            f"<div style='font-size:11px;font-weight:600;color:#8b9ab0;'>{ov_sym}</div>"
+                            f"<div style='font-size:16px;font-weight:700;color:{ov_dir_c};margin:4px 0;'>{ov_label}</div>"
+                            f"<div style='font-size:11px;color:{ov_gc};'>{ov_row.get('Final',0)} {ov_grade}</div>"
+                            f"<div style='font-size:10px;color:#8b9ab0;'>{ov_row.get('Status','—')[:12]}</div></div>", unsafe_allow_html=True)
+            except Exception:
+                st.markdown(f"<div style='background:#0d1117;border:1px solid rgba(255,255,255,0.07);border-radius:8px;padding:10px;text-align:center;'>"
+                            f"<div style='font-size:11px;color:#8b9ab0;'>{ov_sym}</div>"
+                            f"<div style='font-size:14px;color:#4a5568;margin:4px 0;'>—</div></div>", unsafe_allow_html=True)
+    st.markdown("---")
+
     # ── Title bar ──
     top1, top2, top3 = st.columns([2, 3, 1])
     with top1:
@@ -1437,25 +1472,27 @@ def render_live(symbol, interval, bars, balance, risk_pct, notifier):
     dir_col = "#10b981" if plan.direction == "Buy" else "#ef4444" if plan.direction == "Sell" else "#f59e0b"
 
     def kpi(lbl, val, col="#e8edf2"):
-        return (f"<div style='background:#0d1117;border:1px solid rgba(255,255,255,0.07);border-radius:6px;padding:10px 12px;flex:1;min-width:0;'>"
-                f"<div style='font-size:10px;color:#8b9ab0;font-family:Space Mono,monospace;letter-spacing:.07em;margin-bottom:4px;white-space:nowrap;'>{lbl}</div>"
-                f"<div style='font-size:14px;font-weight:700;color:{col};font-family:Space Mono,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'>{val}</div></div>")
+        return (f"<div style='background:#0d1117;border:1px solid rgba(255,255,255,0.07);border-radius:6px;padding:12px 14px;min-width:100px;'>"
+                f"<div style='font-size:10px;color:#8b9ab0;font-family:Space Mono,monospace;letter-spacing:.07em;margin-bottom:6px;'>{lbl}</div>"
+                f"<div style='font-size:15px;font-weight:700;color:{col};font-family:Space Mono,monospace;'>{val}</div></div>")
 
     adj_str = ("+" + str(plan.news_adj)) if plan.news_adj >= 0 else str(plan.news_adj)
-    st.markdown(f"""<div style='display:flex;gap:8px;margin:12px 0;flex-wrap:wrap;'>
-      {kpi("STRATEGY", plan.strategy[:16], "#00d4aa")}
-      {kpi("TECH SCORE", str(plan.setup_score), grade_color(plan.setup_grade))}
-      {kpi("NEWS ADJ", adj_str, adj_col)}
-      {kpi("FINAL SCORE", str(plan.final_score), gc)}
-      {kpi("GRADE", plan.final_grade, gc)}
-      {kpi("CONFLUENCE", f"{plan.confluence_count}/6", conf_col)}
-      {kpi("SESSION", plan.session_label[:12], "#8b9ab0")}
-      {kpi("NEWS RISK", plan.news_risk, news_col)}
-      {kpi("DIRECTION", plan.direction, dir_col)}
-      {kpi("R:R", fmt_rr(plan.rr), "#a78bfa")}
-      {kpi("RSI14", rsi_val, rsi_col)}
-      {kpi("LOT", fmt_num(plan.suggested_lot, 3), "#00d4aa")}
-    </div>""", unsafe_allow_html=True)
+    st.markdown(f"""<div style='display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin:14px 0;'>
+{kpi("STRATEGY", plan.strategy[:18], "#00d4aa")}
+{kpi("TECH", str(plan.setup_score), grade_color(plan.setup_grade))}
+{kpi("NEWS", adj_str, adj_col)}
+{kpi("FINAL", str(plan.final_score), gc)}
+{kpi("GRADE", plan.final_grade, gc)}
+{kpi("CONFLUENCE", f"{plan.confluence_count}/6", conf_col)}
+</div>
+<div style='display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin:0 0 14px;'>
+{kpi("SESSION", plan.session_label[:14], "#8b9ab0")}
+{kpi("NEWS RISK", plan.news_risk, news_col)}
+{kpi("DIRECTION", plan.direction, dir_col)}
+{kpi("R:R", fmt_rr(plan.rr), "#a78bfa")}
+{kpi("RSI14", rsi_val, rsi_col)}
+{kpi("LOT", fmt_num(plan.suggested_lot, 3), "#00d4aa")}
+</div>""", unsafe_allow_html=True)
     st.markdown("---")
 
     # ── 3-COLUMN LAYOUT ──
@@ -1474,13 +1511,44 @@ def render_live(symbol, interval, bars, balance, risk_pct, notifier):
             render_kv_panel("SWEEP", [("Severity", sweep["severity"], "bad" if sweep["severity"] == "HIGH" else "warn"), ("Detail", sweep["desc"], "")])
         render_news_panel(plan)
 
+        # ── GROK PRE-ENTRY ANALYSIS (confirm before entering) ──
+        xai_key = get_xai_key()
+        if xai_key and plan.direction in ("Buy", "Sell"):
+            with st.expander("GROK AI — Confirm Trade?", expanded=False):
+                grok_pre_key = f"grok_pre_{symbol}_{plan.direction}_{plan.setup_score}"
+                if st.button("Analyze Setup", key="btn_grok_pre"):
+                    with st.spinner("Grok analyzing..."):
+                        row = df.iloc[-1]
+                        recent = df.tail(10)[["open", "high", "low", "close"]].round(5).to_string(index=False)
+                        msg = (f"I'm considering a {plan.direction} on {SYMBOL_NAMES.get(symbol, symbol)}.\n"
+                               f"Strategy: {plan.strategy} | Regime: {plan.regime}\n"
+                               f"Score: {plan.setup_score}/100 ({plan.setup_grade}) | Confluence: {plan.confluence_count}/6\n"
+                               f"Entry: {fmt_price(plan.entry, symbol)} | SL: {fmt_price(plan.sl, symbol)} | "
+                               f"TP1: {fmt_price(plan.tp1, symbol)} | TP2: {fmt_price(plan.tp2, symbol)}\n"
+                               f"R:R: {fmt_rr(plan.rr)} | RSI: {fmt_num(row.get('rsi14'), 1)}\n"
+                               f"News: {plan.news_risk} risk, {plan.news_bias} bias\n"
+                               f"Session: {plan.session_label}\n"
+                               f"Last 10 bars:\n{recent}\n"
+                               f"Should I take this trade? ENTER or SKIP? Brief reasoning (3-4 sentences).")
+                        result = _grok(
+                            [{"role": "system", "content": "You are a professional forex risk manager. Be direct. Say ENTER or SKIP first, then explain why."},
+                             {"role": "user", "content": msg}],
+                            max_tokens=300, temperature=0.3, api_key=xai_key)
+                        st.session_state[grok_pre_key] = result or "No response"
+                pre_advice = st.session_state.get(grok_pre_key, "")
+                if pre_advice:
+                    safe = pre_advice.replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+                    st.markdown(f"<div class='ai-bubble'><div class='ai-header'>GROK VERDICT</div>{safe}</div>", unsafe_allow_html=True)
+
     with col_c:
         st.plotly_chart(build_chart(df, plan, symbol), use_container_width=True)
-        # Market overview
-        st.markdown("<div class='mono-title'>MARKET OVERVIEW</div>", unsafe_allow_html=True)
-        overview_syms = [s for s in ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD", "AUDUSD", "USDCAD"] if s in INTERNAL_SYMBOLS]
-        ov = [build_overview_row(s, balance, risk_pct, get_td_key()) for s in overview_syms]
-        st.dataframe(pd.DataFrame(ov), use_container_width=True, hide_index=True)
+        # Entry reasoning
+        if plan.entry_reasons:
+            st.markdown("<div class='panel'><div class='mono-title'>WHY THIS TRADE</div>", unsafe_allow_html=True)
+            for reason in plan.entry_reasons:
+                safe_r = str(reason).replace("<", "&lt;").replace(">", "&gt;")
+                st.markdown(f"<div style='font-size:12px;color:#c7d2fe;padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.04);'>{safe_r}</div>", unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
 
     with col_r:
         active = render_trade_tracker(plan, price, df)
