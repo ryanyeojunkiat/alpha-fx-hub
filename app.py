@@ -858,7 +858,7 @@ def _trend_plan(df:pd.DataFrame, symbol:str, regime:str, htf_bias:str) -> Plan:
     rr = abs(tp2-entry)/max(abs(entry-sl),1e-9)
     score, breakdown, confluence, sess_pts = _score_plan(row,prev,df,direction,rr,symbol)
     sess_pts2, sess_name = session_score(symbol, row.get("time",pd.Timestamp.utcnow()))
-    ready = (score>=70 and rr>=1.0 and confluence>=2)
+    ready = (score>=80 and rr>=1.0 and confluence>=2)
 
     p2 = Plan(
         symbol=symbol, regime=regime, strategy="Trend Continuation", direction=direction,
@@ -919,7 +919,7 @@ def _mean_rev_plan(df:pd.DataFrame, symbol:str, regime:str) -> Plan:
         base += 10
     score = min(100, score+base)
     sess_pts2, sess_name = session_score(symbol, row.get("time",pd.Timestamp.utcnow()))
-    ready = (score>=65 and rr>=1.3 and confluence>=2)
+    ready = (score>=80 and rr>=1.0 and confluence>=2)
 
     p = Plan(
         symbol=symbol, regime=regime, strategy="Mean Reversion", direction=direction,
@@ -969,7 +969,7 @@ def _squeeze_plan(df:pd.DataFrame, symbol:str) -> Plan:
     score, breakdown, confluence, _ = _score_plan(row,prev,df,direction,rr,symbol)
     score = min(100, score+15)
     sess_pts2, sess_name = session_score(symbol, row.get("time",pd.Timestamp.utcnow()))
-    ready = (score>=65 and rr>=1.3)
+    ready = (score>=80 and rr>=1.0)
 
     p = Plan(
         symbol=symbol, regime="squeeze", strategy="BB Squeeze Breakout", direction=direction,
@@ -1063,7 +1063,7 @@ def _xau_plan(df5:pd.DataFrame, df15:pd.DataFrame, df1h:pd.DataFrame, symbol:str
 
     p2 = Plan(
         symbol=symbol, regime="gold_scalp", strategy="XAU 20pt Scalp", direction=direction,
-        execution_status="Ready to Enter" if score>=75 else "Wait",
+        execution_status="Ready to Enter" if score>=80 else "Wait",
         setup_score=score, setup_grade=score_to_grade(score),
         entry=entry, sl=sl, tp1=tp1, tp2=tp2, rr=float(rr),
         score_breakdown=breakdown, confluence_count=confluence,
@@ -1491,13 +1491,13 @@ def build_overview_row(sym, balance, risk_pct, td_key):
 
 
 # ============================================================
-# TELEGRAM AUTO-SEND (A+ signals)
+# TELEGRAM AUTO-SEND (A / A+ signals — score >= 80)
 # ============================================================
 def _maybe_send_telegram(plan: Plan, notifier):
-    """Auto-send Telegram for A+ signals with 15-min cooldown."""
+    """Auto-send Telegram for A/A+ signals (score>=80) with 15-min cooldown."""
     if not notifier:
         return
-    if plan.final_grade != "A+" or plan.execution_status != "Ready to Enter":
+    if plan.final_score < 80 or plan.execution_status != "Ready to Enter":
         return
     if plan.direction not in ("Buy", "Sell"):
         return
@@ -1512,7 +1512,8 @@ def _maybe_send_telegram(plan: Plan, notifier):
             return
 
     try:
-        msg = (f"A+ SIGNAL — {plan.symbol}\n"
+        grade_label = "A+" if plan.final_score >= 90 else "A"
+        msg = (f"{grade_label} SIGNAL — {plan.symbol}\n"
                f"Direction: {plan.direction}\n"
                f"Score: {plan.final_score} ({plan.final_grade})\n"
                f"Strategy: {plan.strategy}\n"
@@ -1564,8 +1565,55 @@ def render_live(symbol, interval, bars, balance, risk_pct, notifier):
     chg = price - prev
     chg_pct = (chg / prev * 100) if prev else 0
 
-    # ── Auto Telegram for A+ ──
+    # ── Auto Telegram for A/A+ ──
     _maybe_send_telegram(plan, notifier)
+
+    # ── A/A+ POPUP ALERT WITH SOUND ──
+    if plan.final_score >= 80 and plan.direction in ("Buy", "Sell"):
+        alert_key = f"alert_{symbol}_{plan.direction}_{plan.final_score}"
+        if alert_key not in st.session_state:
+            st.session_state[alert_key] = True
+            dir_emoji = "🟢" if plan.direction == "Buy" else "🔴"
+            st.markdown(f"""
+<div id="fx-alert" style="position:fixed;top:80px;left:50%;transform:translateX(-50%);z-index:9999;
+background:linear-gradient(135deg,#0f2027,#203a43);border:2px solid {'#10b981' if plan.direction=='Buy' else '#ef4444'};
+border-radius:12px;padding:20px 32px;box-shadow:0 8px 32px rgba(0,0,0,0.6);text-align:center;min-width:380px;animation:fadeIn 0.3s ease-in;">
+<div style="font-size:28px;margin-bottom:6px;">{dir_emoji}</div>
+<div style="font-family:Space Mono,monospace;font-size:20px;font-weight:700;color:{'#10b981' if plan.direction=='Buy' else '#ef4444'};letter-spacing:0.1em;">
+{plan.final_grade} SIGNAL — {plan.direction.upper()}</div>
+<div style="font-size:32px;font-weight:800;color:#e8edf2;margin:8px 0;">{SYMBOL_NAMES.get(symbol,symbol)}</div>
+<div style="font-size:14px;color:#c7d2fe;">Score: {plan.final_score}/100 | R:R {fmt_rr(plan.rr)} | {plan.strategy}</div>
+<div style="font-size:13px;color:#8b9ab0;margin-top:6px;">Entry: {fmt_price(plan.entry,symbol)} | SL: {fmt_price(plan.sl,symbol)} | TP1: {fmt_price(plan.tp1,symbol)}</div>
+<div style="margin-top:12px;font-size:12px;color:#00d4aa;font-weight:600;letter-spacing:0.15em;">READY TO ENTER</div>
+</div>
+<style>@keyframes fadeIn{{from{{opacity:0;transform:translateX(-50%) translateY(-20px);}}to{{opacity:1;transform:translateX(-50%) translateY(0);}}}}</style>
+<script>
+(function(){{
+  try {{
+    var ctx = new (window.AudioContext||window.webkitAudioContext)();
+    var o = ctx.createOscillator();
+    var g = ctx.createGain();
+    o.connect(g); g.connect(ctx.destination);
+    o.type = 'sine';
+    g.gain.value = 0.3;
+    // Play alert tone: 3 beeps
+    var t = ctx.currentTime;
+    o.frequency.setValueAtTime(880, t);
+    g.gain.setValueAtTime(0.3, t);
+    g.gain.setValueAtTime(0, t+0.15);
+    g.gain.setValueAtTime(0.3, t+0.25);
+    g.gain.setValueAtTime(0, t+0.4);
+    g.gain.setValueAtTime(0.3, t+0.5);
+    g.gain.setValueAtTime(0, t+0.65);
+    o.start(t); o.stop(t+0.7);
+  }} catch(e) {{}}
+  // Auto-dismiss after 8 seconds
+  setTimeout(function(){{
+    var el = document.getElementById('fx-alert');
+    if(el) el.style.display='none';
+  }}, 8000);
+}})();
+</script>""", unsafe_allow_html=True)
 
     # ── MT5 open positions ──
     mt5_positions = fetch_mt5_positions(_ma_tok, _ma_acc) if (_ma_tok and _ma_acc) else []
