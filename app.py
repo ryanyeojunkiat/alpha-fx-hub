@@ -1514,23 +1514,26 @@ def _maybe_send_telegram(plan: Plan, notifier):
 
     try:
         grade_label = "A+" if plan.final_score >= 90 else "A"
-        msg = (f"{grade_label} SIGNAL — {plan.symbol}\n"
-               f"Direction: {plan.direction}\n"
-               f"Score: {plan.final_score} ({plan.final_grade})\n"
+        dir_emoji = "🟢" if plan.direction == "Buy" else "🔴"
+        msg = (f"{dir_emoji} <b>{grade_label} SIGNAL — {plan.symbol}</b>\n\n"
+               f"Direction: <b>{plan.direction}</b>\n"
+               f"Score: <b>{plan.final_score}/100 ({plan.final_grade})</b>\n"
                f"Strategy: {plan.strategy}\n"
-               f"Entry: {fmt_price(plan.entry, plan.symbol)}\n"
-               f"SL: {fmt_price(plan.sl, plan.symbol)}\n"
-               f"TP1: {fmt_price(plan.tp1, plan.symbol)}\n"
-               f"TP2: {fmt_price(plan.tp2, plan.symbol)}\n"
+               f"Entry: <code>{fmt_price(plan.entry, plan.symbol)}</code>\n"
+               f"SL: <code>{fmt_price(plan.sl, plan.symbol)}</code>\n"
+               f"TP1: <code>{fmt_price(plan.tp1, plan.symbol)}</code>\n"
+               f"TP2: <code>{fmt_price(plan.tp2, plan.symbol)}</code>\n"
                f"R:R: {fmt_rr(plan.rr)}\n"
                f"Regime: {plan.regime}\n"
                f"Session: {plan.session_label}\n"
-               f"Confluence: {plan.confluence_count}/6")
-        notifier.send_signal(msg)
+               f"Confluence: {plan.confluence_count}/6\n\n"
+               f"⚡ <b>READY TO ENTER</b>")
+        notifier.broadcast(msg)
         sent_signals[cooldown_key] = now
         st.session_state["tg_sent_signals"] = sent_signals
-    except Exception:
-        pass
+    except Exception as e:
+        import logging
+        logging.error(f"Telegram send failed: {e}")
 
 
 # ============================================================
