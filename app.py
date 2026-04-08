@@ -1481,13 +1481,14 @@ def build_overview_row(sym, balance, risk_pct, td_key):
         df, plan = select_plan(sym, "15min", 260, td_key)
         plan = finalize_plan(plan, balance, risk_pct)
         price = float(df["close"].iloc[-1])
-        return {"Symbol": sym, "Price": fmt_price(price, sym), "Signal": plan.direction,
+        row = {"Symbol": sym, "Price": fmt_price(price, sym), "Signal": plan.direction,
                 "Status": plan.execution_status[:18], "Tech": plan.setup_score,
                 "News Adj": plan.news_adj, "Final": plan.final_score, "Grade": plan.final_grade,
                 "R:R": fmt_rr(plan.rr), "Session": plan.session_label[:15], "News": plan.news_risk}
+        return row, plan
     except Exception as e:
         return {"Symbol": sym, "Price": "ERR", "Signal": "—", "Status": str(e)[:18],
-                "Tech": 0, "News Adj": 0, "Final": 0, "Grade": "D", "R:R": "—", "Session": "—", "News": "—"}
+                "Tech": 0, "News Adj": 0, "Final": 0, "Grade": "D", "R:R": "—", "Session": "—", "News": "—"}, None
 
 
 # ============================================================
@@ -1636,7 +1637,10 @@ border-radius:12px;padding:20px 32px;box-shadow:0 8px 32px rgba(0,0,0,0.6);text-
     for idx, ov_sym in enumerate(overview_syms):
         with ov_cols[idx + 1]:
             try:
-                ov_row = build_overview_row(ov_sym, balance, risk_pct, get_td_key())
+                ov_row, ov_plan = build_overview_row(ov_sym, balance, risk_pct, get_td_key())
+                # Send Telegram for A/A+ signals on ANY symbol
+                if ov_plan:
+                    _maybe_send_telegram(ov_plan, notifier)
                 ov_dir = ov_row.get("Signal", "—")
                 ov_dir_c = "#10b981" if ov_dir == "Buy" else "#ef4444" if ov_dir == "Sell" else "#f59e0b"
                 ov_grade = ov_row.get("Grade", "D")
