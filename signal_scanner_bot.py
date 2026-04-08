@@ -426,6 +426,35 @@ def scan_symbol(symbol, events=None):
         rr = abs(tp2 - entry) / max(abs(entry - sl), 1e-9)
         score, breakdown, confluence, sess_name = score_setup(row, prev, df, direction, rr, symbol)
 
+        # ── MTF alignment bonus (up to +15) ──
+        # Check if higher timeframe (using EMA alignment depth) confirms direction
+        if direction == "Buy":
+            if row["ema20"] > row["ema50"] > row["ema200"]:
+                breakdown["MTF"] = 15  # Full alignment
+            elif row["ema20"] > row["ema50"]:
+                breakdown["MTF"] = 8   # Partial
+            else:
+                breakdown["MTF"] = 0
+        else:
+            if row["ema20"] < row["ema50"] < row["ema200"]:
+                breakdown["MTF"] = 15
+            elif row["ema20"] < row["ema50"]:
+                breakdown["MTF"] = 8
+            else:
+                breakdown["MTF"] = 0
+        score = min(100, score + breakdown["MTF"])
+
+        # ── Liquidity sweep bonus (up to +10) ──
+        rh = df.iloc[-6:-1]["high"].max()
+        rl = df.iloc[-6:-1]["low"].min()
+        bull_sweep = row["low"] < rl and row["close"] > rl
+        bear_sweep = row["high"] > rh and row["close"] < rh
+        if (direction == "Buy" and bull_sweep) or (direction == "Sell" and bear_sweep):
+            breakdown["Sweep"] = 10
+            score = min(100, score + 10)
+        else:
+            breakdown["Sweep"] = 0
+
         # ── Apply news penalty to final score ──
         if news_penalty != 0:
             breakdown["News"] = news_penalty
