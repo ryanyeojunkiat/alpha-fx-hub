@@ -33,6 +33,11 @@ from config import (
 )
 from telegram.notifications import NotificationManager
 from auth.supabase_auth import SupabaseAuth, render_auth_page, _clear_browser_session
+from pa_engine import (
+    detect_swings, analyze_structure, find_key_levels,
+    detect_liquidity_sweep, check_rejection_candle, score_setup as pa_score_setup,
+    generate_plan as pa_generate_plan, get_htf_structure, TradePlan as PATradePlan
+)
 
 # GROK_API_KEY may not be in config, use xAI key pattern instead
 try:
@@ -1208,6 +1213,76 @@ def get_market_sentiment(td_key: str) -> dict:
 
 
 def select_plan(symbol:str, interval:str, bars:int, td_key:str) -> Tuple[pd.DataFrame,Plan]:
+    """V2 Plan selection — Price Action engine with structural analysis."""
+    s = norm(symbol)
+
+    # Fetch entry timeframe data
+    df = add_indicators(fetch_bars(s, interval, max(300, bars), td_key))
+
+    # Fetch higher timeframe data for MTF alignment
+    try:
+        df_h1 = add_indicators(fetch_bars(s, "1h", 200, td_key))
+    except Exception:
+        df_h1 = None
+    try:
+        df_h4 = add_indicators(fetch_bars(s, "4h", 200, td_key))
+    except Exception:
+        df_h4 = None
+
+    # Get HTF structure
+    htf_trend = get_htf_structure(df_h1, df_h4)
+
+    # Generate PA-based trade plan
+    pa_plan = pa_generate_plan(df, symbol=s, htf_trend=htf_trend, htf_df=df_h4)
+
+    # Convert PATradePlan → legacy Plan dataclass for compatibility
+    if pa_plan.valid and pa_plan.direction in ("Buy", "Sell"):
+        # Determine strategy name from entry type
+        strategy_map = {
+            "SWEEP_REVERSAL": "Sweep Reversal",
+            "KEY_LEVEL_REJECTION": "Key Level Rejection",
+            "BOS_CONTINUATION": "BOS Continuation",
+            "CHOCH_REVERSAL": "CHoCH Reversal",
+        }
+        strategy = strategy_map.get(pa_plan.entry_type, "Price Action")
+
+        # Build session info
+        sess_pts, sess_name = session_score(s, df.iloc[-1].get("time", pd.Timestamp.utcnow()))
+
+        ready_status = "Ready to Enter" if pa_plan.ready else "Wait"
+
+        plan = Plan(
+            symbol=s,
+            regime=pa_plan.structure_trend.lower().replace("_weak", ""),
+            strategy=strategy,
+            direction=pa_plan.direction,
+            execution_status=ready_status,
+            setup_score=pa_plan.score,
+            setup_grade=pa_plan.grade,
+            entry=pa_plan.entry,
+            sl=pa_plan.sl,
+            tp1=pa_plan.tp1,
+            tp2=pa_plan.tp2,
+            tp3=pa_plan.tp3,
+            rr=pa_plan.rr,
+            reason="; ".join(pa_plan.reasons[:3]),
+            entry_reasons=pa_plan.reasons,
+            score_breakdown=pa_plan.breakdown,
+            confluence_count=pa_plan.confluence_count,
+            session_label=sess_name,
+            session_score=sess_pts,
+            mtf_aligned=(pa_plan.breakdown.get("MTF", 0) >= 6),
+        )
+        return df, plan
+
+    # No valid setup — return empty plan
+    regime = pa_plan.structure_trend if pa_plan.structure_trend else "ranging"
+    reason = pa_plan.reasons[0] if pa_plan.reasons else "No setup"
+    return df, _empty(s, regime.lower(), reason)
+
+
+def select_plan_legacy(symbol:str, interval:str, bars:int, td_key:str) -> Tuple[pd.DataFrame,Plan]:
+    """Legacy V1 plan selection (indicator-based). Kept for comparison."""
     s = norm(symbol)
     if s == "XAUUSD":
         df5 = add_indicators(fetch_bars(s,"5min",max(260,bars),td_key))

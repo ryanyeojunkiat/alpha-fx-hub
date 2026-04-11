@@ -3,10 +3,18 @@
 Alpha FX Hub — Standalone Signal Scanner Bot
 Runs independently of Streamlit. Scans all symbols, sends Telegram for A/A+ signals.
 """
-import os, json, requests, time
+import os, sys, json, requests, time
 from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
+
+# Add project root to path for pa_engine import
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from pa_engine import (
+    detect_swings, analyze_structure, find_key_levels,
+    detect_liquidity_sweep, check_rejection_candle, score_setup as pa_score,
+    generate_plan as pa_generate_plan, get_htf_structure
+)
 
 # ── Config (reads from environment or .secrets file) ──
 def _load_secrets():
@@ -369,100 +377,71 @@ def score_to_grade(s):
 
 
 def scan_symbol(symbol, events=None):
-    """Scan one symbol. Returns (score, grade, direction, strategy, details) or None."""
+    """Scan one symbol using PA Engine V2. Returns signal dict or None."""
     try:
-        df = add_indicators(fetch_bars(symbol, "15min", 260))
-        if len(df) < 220:
-            return None
-
-        regime = get_regime(df)
-        if regime == "insufficient":
+        # Fetch entry timeframe (15min)
+        df = add_indicators(fetch_bars(symbol, "15min", 300))
+        if len(df) < 50:
             return None
 
         row = df.iloc[-1]
-        prev = df.iloc[-2]
-        atr = row["atr14"]
-        close = row["close"]
-        ema20 = row["ema20"]
-
+        atr = row.get("atr14", 0)
         if pd.isna(atr) or atr <= 0:
             return None
 
+        # Fetch HTF data for multi-timeframe alignment
+        try:
+            df_h1 = add_indicators(fetch_bars(symbol, "1h", 200))
+        except Exception:
+            df_h1 = None
+        try:
+            df_h4 = add_indicators(fetch_bars(symbol, "4h", 200))
+        except Exception:
+            df_h4 = None
+
+        time.sleep(0.5)  # Rate limit between TF fetches
+
+        # Get HTF structure
+        htf_trend = get_htf_structure(df_h1, df_h4)
+
+        # Generate PA-based trade plan
+        pa_plan = pa_generate_plan(df, symbol=symbol, htf_trend=htf_trend, htf_df=df_h4)
+
+        if not pa_plan.valid or pa_plan.direction == "Wait":
+            return None
+
+        direction = pa_plan.direction
+        score = pa_plan.score
+        grade = pa_plan.grade
+
         # ── News danger check ──
         news_penalty, news_event = check_news_danger(symbol, events or [])
-
-        # Determine direction based on regime
-        if regime in ("trend_up", "trend_down"):
-            direction = "Buy" if regime == "trend_up" else "Sell"
-            strategy = "Trend Continuation"
-        elif regime == "squeeze":
-            if row["close"] > row["bb_upper"] and row["macd_hist"] > 0:
-                direction = "Buy"
-            elif row["close"] < row["bb_lower"] and row["macd_hist"] < 0:
-                direction = "Sell"
-            else:
-                return None
-            strategy = "BB Squeeze"
-        else:
-            dev = (close - ema20) / atr
-            if abs(dev) < 0.8:
-                return None
-            direction = "Sell" if dev > 0 else "Buy"
-            strategy = "Mean Reversion"
-
-        # Calculate entry/SL/TP
-        if direction == "Buy":
-            entry = close
-            sl = min(df.tail(6)["low"].min(), ema20 - 0.5 * atr)
-            risk = entry - sl
-            tp1 = entry + risk
-            tp2 = entry + 2.0 * risk
-        else:
-            entry = close
-            sl = max(df.tail(6)["high"].max(), ema20 + 0.5 * atr)
-            risk = sl - entry
-            tp1 = entry - risk
-            tp2 = entry - 2.0 * risk
-
-        rr = abs(tp2 - entry) / max(abs(entry - sl), 1e-9)
-        score, breakdown, confluence, sess_name = score_setup(row, prev, df, direction, rr, symbol)
-
-        # ── MTF alignment bonus (up to +15) ──
-        # Check if higher timeframe (using EMA alignment depth) confirms direction
-        if direction == "Buy":
-            if row["ema20"] > row["ema50"] > row["ema200"]:
-                breakdown["MTF"] = 15  # Full alignment
-            elif row["ema20"] > row["ema50"]:
-                breakdown["MTF"] = 8   # Partial
-            else:
-                breakdown["MTF"] = 0
-        else:
-            if row["ema20"] < row["ema50"] < row["ema200"]:
-                breakdown["MTF"] = 15
-            elif row["ema20"] < row["ema50"]:
-                breakdown["MTF"] = 8
-            else:
-                breakdown["MTF"] = 0
-        score = min(100, score + breakdown["MTF"])
-
-        # ── Liquidity sweep bonus (up to +10) ──
-        rh = df.iloc[-6:-1]["high"].max()
-        rl = df.iloc[-6:-1]["low"].min()
-        bull_sweep = row["low"] < rl and row["close"] > rl
-        bear_sweep = row["high"] > rh and row["close"] < rh
-        if (direction == "Buy" and bull_sweep) or (direction == "Sell" and bear_sweep):
-            breakdown["Sweep"] = 10
-            score = min(100, score + 10)
-        else:
-            breakdown["Sweep"] = 0
-
-        # ── Apply news penalty to final score ──
         if news_penalty != 0:
-            breakdown["News"] = news_penalty
+            pa_plan.breakdown["News"] = news_penalty
             score = max(0, min(100, score + news_penalty))
+            grade = score_to_grade(score)
             print(f"    {symbol}: News penalty {news_penalty} → {news_event}")
 
-        grade = score_to_grade(score)
+        # Session info
+        now = pd.Timestamp.utcnow()
+        hour = now.hour
+        preferred = SESSIONS_PREF.get(symbol, ["London", "NewYork"])
+        sess_name = "Off-peak"
+        if 7 <= hour < 16 and "London" in preferred:
+            sess_name = "London"
+        if 12 <= hour < 21 and "NewYork" in preferred:
+            sess_name = "NewYork" if hour >= 16 else "London/NY Overlap"
+        if 22 <= hour or hour < 7:
+            sess_name = "Asian" if "Asian" in preferred else "Off-peak"
+
+        # Strategy name from entry type
+        strategy_map = {
+            "SWEEP_REVERSAL": "Sweep Reversal",
+            "KEY_LEVEL_REJECTION": "Key Level",
+            "BOS_CONTINUATION": "BOS Continuation",
+            "CHOCH_REVERSAL": "CHoCH Reversal",
+        }
+        strategy = strategy_map.get(pa_plan.entry_type, "Price Action")
 
         return {
             "symbol": symbol,
@@ -470,20 +449,23 @@ def scan_symbol(symbol, events=None):
             "grade": grade,
             "direction": direction,
             "strategy": strategy,
-            "regime": regime,
-            "entry": entry,
-            "sl": sl,
-            "tp1": tp1,
-            "tp2": tp2,
-            "rr": rr,
-            "confluence": confluence,
+            "regime": pa_plan.structure_trend,
+            "entry": pa_plan.entry,
+            "sl": pa_plan.sl,
+            "tp1": pa_plan.tp1,
+            "tp2": pa_plan.tp2,
+            "rr": pa_plan.rr,
+            "confluence": pa_plan.confluence_count,
             "session": sess_name,
-            "rsi": float(row["rsi14"]),
-            "breakdown": breakdown,
+            "rsi": float(row.get("rsi14", 50)),
+            "breakdown": pa_plan.breakdown,
             "news_warning": news_event,
+            "reasons": pa_plan.reasons,
         }
     except Exception as e:
         print(f"  [{symbol}] Error: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
