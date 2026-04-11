@@ -84,8 +84,8 @@ st.markdown("""<style>
 .ai-header{font-family:'Orbitron',monospace;font-size:10px;color:#9d4edd;letter-spacing:.12em;margin-bottom:6px;text-shadow:0 0 6px rgba(157,78,221,0.5);}
 .conf-bar{height:6px;border-radius:3px;margin:4px 0;}
 /* Anime assistant floating avatar */
-.aria-avatar{position:fixed;bottom:20px;right:20px;z-index:9999;width:80px;height:80px;border-radius:50%;border:2px solid #ff2d7b;box-shadow:0 0 20px rgba(255,45,123,0.4),0 0 40px rgba(255,45,123,0.2);cursor:pointer;transition:all 0.3s ease;background:linear-gradient(135deg,#1a1a3e,#0d0b1e);display:flex;align-items:center;justify-content:center;font-size:36px;}
-.aria-avatar:hover{transform:scale(1.1);box-shadow:0 0 30px rgba(255,45,123,0.6),0 0 60px rgba(255,45,123,0.3);}
+.nami-avatar{position:fixed;bottom:20px;right:20px;z-index:9999;width:80px;height:80px;border-radius:50%;border:2px solid #ff2d7b;box-shadow:0 0 20px rgba(255,45,123,0.4),0 0 40px rgba(255,45,123,0.2);cursor:pointer;transition:all 0.3s ease;background:linear-gradient(135deg,#1a1a3e,#0d0b1e);display:flex;align-items:center;justify-content:center;font-size:36px;}
+.nami-avatar:hover{transform:scale(1.1);box-shadow:0 0 30px rgba(255,45,123,0.6),0 0 60px rgba(255,45,123,0.3);}
 /* Neon sidebar nav */
 .nav-item{padding:10px 16px;margin:4px 8px;border-radius:8px;font-family:'Orbitron',monospace;font-size:11px;letter-spacing:.1em;cursor:pointer;transition:all 0.3s ease;border:1px solid transparent;}
 .nav-item:hover{border-color:rgba(0,255,242,0.3);background:rgba(0,255,242,0.05);}
