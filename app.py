@@ -45,6 +45,7 @@ from pages_grok_chat import render_grok_chat as render_aria_chat
 from pages_mt5_analysis import render_mt5_analysis
 from pages_academy import render_academy
 from pages_forum import render_forum
+from cyberpunk_sounds import inject_cyberpunk_sounds
 
 # GROK_API_KEY may not be in config, use xAI key pattern instead
 try:
@@ -62,8 +63,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Inject the cyberpunk theme
+# Inject the cyberpunk theme + sounds
 inject_cyberpunk_css()
+inject_cyberpunk_sounds()
 
 # Additional app-specific styles on top of cyberpunk theme
 st.markdown("""<style>
