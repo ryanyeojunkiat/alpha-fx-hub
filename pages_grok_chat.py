@@ -384,7 +384,7 @@ or advice that could lead to financial loss. You emphasize risk management and p
                 "Authorization": f"Bearer {api_key}"
             },
             json={
-                "model": "grok-3-mini-fast",
+                "model": st.session_state.get("grok_model", "grok-4-1-fast-non-reasoning"),
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     *messages
@@ -448,7 +448,7 @@ Keep the summary concise (3-5 sentences) but informative."""
                 "Authorization": f"Bearer {api_key}"
             },
             json={
-                "model": "grok-3-mini-fast",
+                "model": st.session_state.get("grok_model", "grok-4-1-fast-non-reasoning"),
                 "messages": [
                     {
                         "role": "system",
@@ -513,7 +513,7 @@ Be constructive and focus on learning opportunities."""
                 "Authorization": f"Bearer {api_key}"
             },
             json={
-                "model": "grok-3-mini-fast",
+                "model": st.session_state.get("grok_model", "grok-4-1-fast-non-reasoning"),
                 "messages": [
                     {
                         "role": "system",

@@ -505,40 +505,11 @@ def cyberpunk_header(title: str, subtitle: str = ""):
     subtitle : str, optional
         Subtitle text (no glitch animation)
     """
-    header_html = f"""
-    <div style="text-align: center; margin: 30px 0 40px 0;">
-        <h1 class="cyberpunk-glitch-title" style="
-            font-family: 'Orbitron', sans-serif;
-            font-size: 3.5rem;
-            font-weight: 900;
-            color: #00fff2;
-            text-shadow: 0 0 20px rgba(0, 255, 242, 0.7), 0 0 40px rgba(0, 255, 242, 0.4), 0 0 60px rgba(0, 255, 242, 0.2);
-            letter-spacing: 4px;
-            margin: 0;
-            padding: 20px 0;
-            animation: glitch 2s infinite;
-        ">
-            {title}
-        </h1>
-    """
-
+    subtitle_html = ""
     if subtitle:
-        header_html += f"""
-        <p style="
-            font-family: 'Space Mono', monospace;
-            font-size: 1.2rem;
-            color: #9d4edd;
-            text-shadow: 0 0 10px rgba(157, 78, 221, 0.5);
-            letter-spacing: 2px;
-            margin: 10px 0 0 0;
-        ">
-            {subtitle}
-        </p>
-        """
+        subtitle_html = f'<p style="font-family: \'Space Mono\', monospace; font-size: 1.2rem; color: #9d4edd; text-shadow: 0 0 10px rgba(157, 78, 221, 0.5); letter-spacing: 2px; margin: 10px 0 0 0;">{subtitle}</p>'
 
-    header_html += """
-    </div>
-    """
+    header_html = f'<div style="text-align: center; margin: 30px 0 40px 0;"><h1 class="cyberpunk-glitch-title" style="font-family: \'Orbitron\', sans-serif; font-size: 3.5rem; font-weight: 900; color: #00fff2; text-shadow: 0 0 20px rgba(0, 255, 242, 0.7), 0 0 40px rgba(0, 255, 242, 0.4), 0 0 60px rgba(0, 255, 242, 0.2); letter-spacing: 4px; margin: 0; padding: 20px 0; animation: glitch 2s infinite;">{title}</h1>{subtitle_html}</div>'
 
     st.markdown(header_html, unsafe_allow_html=True)
 

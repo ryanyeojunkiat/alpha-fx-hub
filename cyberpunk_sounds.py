@@ -357,4 +357,4 @@ def inject_cyberpunk_sounds():
     </script>
     """
 
-    components.html(sound_js, height=0, width=0)
+    st.markdown(f"<div style='display:none'>{sound_js}</div>", unsafe_allow_html=True)

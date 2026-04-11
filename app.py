@@ -46,6 +46,8 @@ from pages_mt5_analysis import render_mt5_analysis
 from pages_academy import render_academy
 from pages_forum import render_forum
 from cyberpunk_sounds import inject_cyberpunk_sounds
+from anime_theme import render_aria_character, render_anime_welcome, render_anime_sidebar_decor, inject_anime_css
+from pages_tradingview import render_tradingview_page
 
 # GROK_API_KEY may not be in config, use xAI key pattern instead
 try:
@@ -63,8 +65,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Inject the cyberpunk theme + sounds
+# Inject the cyberpunk theme + anime + sounds
 inject_cyberpunk_css()
+inject_anime_css()
 inject_cyberpunk_sounds()
 
 # Additional app-specific styles on top of cyberpunk theme
@@ -2354,6 +2357,7 @@ with st.sidebar:
     # Navigation mode selector
     NAV_PAGES = {
         "Dashboard": "⚡",
+        "TradingView": "📈",
         "News Intel": "📡",
         "MT5 Analysis": "📊",
         "ARIA Chat": "🤖",
@@ -2383,7 +2387,7 @@ with st.sidebar:
 
     # Trading settings (shown for Dashboard/Backtest)
     current_page = st.session_state["nav_page"]
-    if current_page in ("Dashboard", "Backtest"):
+    if current_page in ("Dashboard", "Backtest", "TradingView"):
         st.markdown("<div style='font-family:Orbitron,monospace;font-size:9px;color:#00fff2;letter-spacing:.2em;padding:4px 0;'>TRADE CONFIG</div>", unsafe_allow_html=True)
         if current_page == "Dashboard":
             auto_refresh = st.toggle("Auto Refresh", value=True)
@@ -2466,37 +2470,24 @@ with st.sidebar:
             _clear_browser_session()
             st.rerun()
 
-    # ARIA anime avatar in sidebar
-    st.markdown("""
-    <div style='text-align:center;padding:16px 0 8px;'>
-        <div style='display:inline-block;width:60px;height:60px;border-radius:50%;
-                    border:2px solid #ff2d7b;box-shadow:0 0 15px rgba(255,45,123,0.4);
-                    background:linear-gradient(135deg,#1a1a3e,#0d0b1e);
-                    display:flex;align-items:center;justify-content:center;margin:0 auto;'>
-            <span style='font-size:28px;'>🌸</span>
-        </div>
-        <div style='font-family:Orbitron,monospace;font-size:9px;color:#ff2d7b;letter-spacing:.15em;margin-top:6px;
-                    text-shadow:0 0 6px rgba(255,45,123,0.4);'>
-            A.R.I.A // ONLINE
-        </div>
-        <div style='font-size:8px;color:#8b9ab0;font-family:Share Tech Mono,monospace;'>
-            AI Research & Intelligence Assistant
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    # ARIA anime character in sidebar
+    render_aria_character()
+    render_anime_sidebar_decor()
 
 interval = INTERVAL_MAP[interval_label]
 
-# ── ANIME AI ASSISTANT FLOATING ELEMENT ──
-st.markdown("""
-<div class='aria-avatar' title='ARIA - Your AI Trading Assistant'>
-    🌸
-</div>
-""", unsafe_allow_html=True)
-
 # ── MAIN PAGE ROUTING ──
 if current_page == "Dashboard":
+    # Show ARIA welcome on dashboard
+    user_email = st.session_state.get("user", {}).get("email", "Trader") if st.session_state.get("user") else "Trader"
+    user_name = user_email.split("@")[0] if "@" in user_email else user_email
+    render_anime_welcome(user_name)
     render_live(symbol, interval, bars, balance, risk_pct, _notifier)
+
+elif current_page == "TradingView":
+    cyberpunk_header("TRADINGVIEW", "Professional Charts + AI Trade Plan Analyzer")
+    _grok_key = get_xai_key()
+    render_tradingview_page(_grok_key)
 
 elif current_page == "News Intel":
     cyberpunk_header("NEWS INTELLIGENCE", "Real-time market intel powered by ARIA")

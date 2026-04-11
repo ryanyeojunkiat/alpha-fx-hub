@@ -121,18 +121,20 @@ CYBERPUNK_CSS = """
 # GROK API UTILITIES
 # ============================================================================
 
-def call_grok_api(prompt: str, api_key: str, model: str = "grok-3-mini-fast") -> Optional[str]:
+def call_grok_api(prompt: str, api_key: str, model: str = None) -> Optional[str]:
     """
     Call Grok API with the provided prompt.
 
     Args:
         prompt: The prompt to send to Grok
         api_key: X.AI API key for Grok
-        model: Model to use (default: grok-3-mini-fast)
+        model: Model to use (auto-detects from session state)
 
     Returns:
         Response text from Grok, or None if request fails
     """
+    if model is None:
+        model = st.session_state.get("grok_model", "grok-4-1-fast-non-reasoning")
     try:
         headers = {
             "Authorization": f"Bearer {api_key}",
