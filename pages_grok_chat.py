@@ -1,6 +1,6 @@
 """
 Grok AI Chat Interface for Alpha FX Hub Trading Platform
-Provides ARIA - the AI assistant for trading strategy, market analysis, and news summarization
+Provides N.A.M.I - the AI assistant for trading strategy, market analysis, and news summarization
 """
 
 import streamlit as st

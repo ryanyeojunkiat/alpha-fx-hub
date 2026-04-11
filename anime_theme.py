@@ -529,6 +529,155 @@ function toggleSound() {
     components.html(sound_html, height=50, scrolling=False)
 
 
+def render_anime_background():
+    """
+    Renders a full-page animated anime background overlay.
+    Floating cherry blossoms, kanji characters, anime silhouettes,
+    and neon particles that drift across the screen.
+    """
+    bg_html = """
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    background: transparent; overflow: hidden;
+    width: 100%; height: 100%;
+    position: relative;
+}
+
+@keyframes float-up {
+    0% { transform: translateY(100%) translateX(0) rotate(0deg); opacity: 0; }
+    5% { opacity: var(--max-opacity, 0.15); }
+    95% { opacity: var(--max-opacity, 0.15); }
+    100% { transform: translateY(-100%) translateX(50px) rotate(360deg); opacity: 0; }
+}
+@keyframes drift-right {
+    0% { transform: translateX(-100%) translateY(0); opacity: 0; }
+    5% { opacity: var(--max-opacity, 0.12); }
+    95% { opacity: var(--max-opacity, 0.12); }
+    100% { transform: translateX(100vw) translateY(30px); opacity: 0; }
+}
+@keyframes petal-fall {
+    0% { transform: translateY(-20px) translateX(0) rotate(0deg); opacity: 0.7; }
+    100% { transform: translateY(calc(100% + 50px)) translateX(80px) rotate(720deg); opacity: 0; }
+}
+@keyframes pulse-glow {
+    0%, 100% { opacity: 0.05; filter: blur(30px); }
+    50% { opacity: 0.12; filter: blur(40px); }
+}
+
+.anime-bg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; overflow: hidden; pointer-events: none; }
+
+/* Floating kanji characters */
+.kanji {
+    position: absolute; font-size: 40px; opacity: 0.08;
+    color: #00ffff; font-family: serif;
+    animation: float-up var(--duration, 20s) linear var(--delay, 0s) infinite;
+    text-shadow: 0 0 15px #00ffff;
+    --max-opacity: 0.08;
+}
+
+/* Cherry blossom petals */
+.petal {
+    position: absolute; width: var(--size, 10px); height: var(--size, 10px);
+    background: radial-gradient(circle, #ff69b4, #ff1493);
+    border-radius: 50% 0 50% 50%;
+    animation: petal-fall var(--duration, 8s) linear var(--delay, 0s) infinite;
+    box-shadow: 0 0 6px #ff1493;
+    opacity: 0.5;
+}
+
+/* Anime character silhouettes */
+.silhouette {
+    position: absolute; opacity: 0;
+    animation: drift-right var(--duration, 30s) linear var(--delay, 0s) infinite;
+    --max-opacity: 0.06;
+}
+.silhouette svg { filter: drop-shadow(0 0 10px var(--color, #ff00ff)); }
+
+/* Neon orbs */
+.orb {
+    position: absolute; border-radius: 50%;
+    animation: pulse-glow var(--duration, 6s) ease-in-out var(--delay, 0s) infinite;
+}
+</style>
+</head>
+<body>
+<div class="anime-bg">
+    <!-- Floating kanji: 金(gold) 剣(sword) 力(power) 龍(dragon) 風(wind) 火(fire) 忍(ninja) 夢(dream) -->
+    <div class="kanji" style="left:5%; --duration:25s; --delay:0s;">金</div>
+    <div class="kanji" style="left:15%; --duration:30s; --delay:3s; color:#ff00ff;">剣</div>
+    <div class="kanji" style="left:25%; --duration:22s; --delay:6s;">力</div>
+    <div class="kanji" style="left:40%; --duration:28s; --delay:2s; color:#ff1493;">龍</div>
+    <div class="kanji" style="left:55%; --duration:24s; --delay:8s;">風</div>
+    <div class="kanji" style="left:65%; --duration:26s; --delay:4s; color:#ff00ff;">火</div>
+    <div class="kanji" style="left:75%; --duration:32s; --delay:1s;">忍</div>
+    <div class="kanji" style="left:88%; --duration:27s; --delay:5s; color:#ffff00;">夢</div>
+
+    <!-- Cherry blossom petals -->
+    <div class="petal" style="left:8%; --size:8px; --duration:7s; --delay:0s;"></div>
+    <div class="petal" style="left:18%; --size:12px; --duration:9s; --delay:1s;"></div>
+    <div class="petal" style="left:30%; --size:6px; --duration:6s; --delay:2.5s;"></div>
+    <div class="petal" style="left:42%; --size:10px; --duration:8s; --delay:0.5s;"></div>
+    <div class="petal" style="left:55%; --size:7px; --duration:7.5s; --delay:3s;"></div>
+    <div class="petal" style="left:68%; --size:11px; --duration:9.5s; --delay:1.5s;"></div>
+    <div class="petal" style="left:78%; --size:8px; --duration:6.5s; --delay:4s;"></div>
+    <div class="petal" style="left:90%; --size:9px; --duration:8.5s; --delay:2s;"></div>
+    <div class="petal" style="left:35%; --size:5px; --duration:10s; --delay:5s;"></div>
+    <div class="petal" style="left:62%; --size:13px; --duration:11s; --delay:0.3s;"></div>
+
+    <!-- Anime silhouettes drifting across -->
+    <!-- Swordsman (Demon Slayer inspired) -->
+    <div class="silhouette" style="top:20%; --duration:35s; --delay:0s; --color:#ff1493;">
+        <svg width="60" height="80" viewBox="0 0 60 80">
+            <circle cx="30" cy="12" r="8" fill="#ff1493" opacity="0.6"/>
+            <rect x="25" y="20" width="10" height="25" rx="3" fill="#ff1493" opacity="0.5"/>
+            <line x1="30" y1="45" x2="22" y2="70" stroke="#ff1493" stroke-width="4" stroke-linecap="round" opacity="0.5"/>
+            <line x1="30" y1="45" x2="38" y2="70" stroke="#ff1493" stroke-width="4" stroke-linecap="round" opacity="0.5"/>
+            <line x1="38" y1="30" x2="55" y2="15" stroke="#00ffff" stroke-width="2" stroke-linecap="round" opacity="0.7"/>
+            <line x1="55" y1="15" x2="58" y2="5" stroke="#00ffff" stroke-width="1.5" opacity="0.5"/>
+        </svg>
+    </div>
+
+    <!-- Navigator (One Piece Nami inspired) -->
+    <div class="silhouette" style="top:50%; --duration:40s; --delay:10s; --color:#ff69b4;">
+        <svg width="50" height="70" viewBox="0 0 50 70">
+            <circle cx="25" cy="10" r="7" fill="#ff69b4" opacity="0.5"/>
+            <path d="M 18 17 Q 10 12 8 8" stroke="#ff69b4" stroke-width="2" fill="none" opacity="0.4"/>
+            <path d="M 32 17 Q 40 12 42 8" stroke="#ff69b4" stroke-width="2" fill="none" opacity="0.4"/>
+            <rect x="20" y="17" width="10" height="22" rx="3" fill="#ff69b4" opacity="0.4"/>
+            <line x1="25" y1="39" x2="18" y2="60" stroke="#ff69b4" stroke-width="3" stroke-linecap="round" opacity="0.4"/>
+            <line x1="25" y1="39" x2="32" y2="60" stroke="#ff69b4" stroke-width="3" stroke-linecap="round" opacity="0.4"/>
+            <circle cx="40" cy="30" r="10" fill="none" stroke="#00ffff" stroke-width="1" opacity="0.3"/>
+        </svg>
+    </div>
+
+    <!-- Ninja (Naruto inspired) -->
+    <div class="silhouette" style="top:70%; --duration:30s; --delay:5s; --color:#ff6600;">
+        <svg width="55" height="75" viewBox="0 0 55 75">
+            <circle cx="28" cy="12" r="8" fill="#ff6600" opacity="0.5"/>
+            <rect x="10" y="8" width="35" height="5" rx="2" fill="#ff6600" opacity="0.3"/>
+            <path d="M 10 10 L 0 15" stroke="#ff6600" stroke-width="2" opacity="0.4"/>
+            <path d="M 45 10 L 55 15" stroke="#ff6600" stroke-width="2" opacity="0.4"/>
+            <rect x="22" y="20" width="12" height="25" rx="3" fill="#ff6600" opacity="0.4"/>
+            <line x1="28" y1="45" x2="20" y2="68" stroke="#ff6600" stroke-width="4" stroke-linecap="round" opacity="0.4"/>
+            <line x1="28" y1="45" x2="36" y2="68" stroke="#ff6600" stroke-width="4" stroke-linecap="round" opacity="0.4"/>
+        </svg>
+    </div>
+
+    <!-- Neon orbs (ambient lighting) -->
+    <div class="orb" style="top:10%;left:20%;width:200px;height:200px;background:radial-gradient(circle,#ff00ff,transparent);--duration:8s;--delay:0s;"></div>
+    <div class="orb" style="top:50%;left:60%;width:250px;height:250px;background:radial-gradient(circle,#00ffff,transparent);--duration:10s;--delay:3s;"></div>
+    <div class="orb" style="top:80%;left:30%;width:180px;height:180px;background:radial-gradient(circle,#ff1493,transparent);--duration:7s;--delay:5s;"></div>
+</div>
+</body>
+</html>
+"""
+    components.html(bg_html, height=0, scrolling=False)
+
+
 def inject_anime_css():
     """
     Injects global CSS animations — floating particles, neon effects,

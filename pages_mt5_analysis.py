@@ -605,7 +605,7 @@ def render_mt5_analysis(
     </style>
     """, unsafe_allow_html=True)
 
-    st.title("🚀 MT5 TRADE ANALYSIS - ARIA")
+    st.title("🚀 MT5 TRADE ANALYSIS - N.A.M.I")
     st.markdown("---")
 
     # Check if credentials are provided
@@ -735,13 +735,13 @@ def render_mt5_analysis(
     # AI ANALYSIS
     # ====================================================================
     if grok_api_key:
-        st.subheader("🤖 ARIA AI Analysis")
+        st.subheader("🤖 N.A.M.I AI Analysis")
 
         col_btn1, col_btn2 = st.columns([1, 4])
 
         with col_btn1:
-            if st.button("🔮 Ask ARIA", key="analyze_btn"):
-                with st.spinner("ARIA is analyzing your trades..."):
+            if st.button("🔮 Ask N.A.M.I", key="analyze_btn"):
+                with st.spinner("N.A.M.I is analyzing your trades..."):
                     trade_summary = generate_trade_summary(df, metrics)
                     analysis = send_to_grok(grok_api_key, trade_summary)
 
@@ -753,7 +753,7 @@ def render_mt5_analysis(
                             padding: 20px;
                             background-color: rgba(0, 217, 255, 0.05);
                         ">
-                            <h4 style="color: {NEON_COLORS['accent']}; margin-top: 0;">ARIA's Analysis</h4>
+                            <h4 style="color: {NEON_COLORS['accent']}; margin-top: 0;">N.A.M.I's Analysis</h4>
                             <p style="color: {NEON_COLORS['primary']}; line-height: 1.6;">
                                 {analysis}
                             </p>
@@ -813,7 +813,7 @@ def render_mt5_analysis(
     # Footer
     st.markdown(f"""
     <div style="text-align: center; color: {NEON_COLORS['accent']}; opacity: 0.7; margin-top: 40px;">
-        <p>📡 MT5 Trade Analysis powered by MetaAPI | 🤖 AI Analysis by ARIA (Grok)</p>
+        <p>📡 MT5 Trade Analysis powered by MetaAPI | 🤖 AI Analysis by N.A.M.I (Grok)</p>
         <p>Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
     </div>
     """, unsafe_allow_html=True)

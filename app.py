@@ -45,7 +45,7 @@ from pages_grok_chat import render_grok_chat as render_nami_chat
 from pages_mt5_analysis import render_mt5_analysis
 from pages_academy import render_academy
 from pages_forum import render_forum
-from anime_theme import render_nami_character, render_anime_welcome, render_anime_sidebar_decor, inject_anime_css, render_cyberpunk_ambient
+from anime_theme import render_nami_character, render_anime_welcome, render_anime_sidebar_decor, inject_anime_css, render_cyberpunk_ambient, render_anime_background
 from pages_tradingview import render_tradingview_page
 
 # GROK_API_KEY may not be in config, use xAI key pattern instead
@@ -64,9 +64,10 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Inject the cyberpunk theme + anime
+# Inject the cyberpunk theme + anime + background
 inject_cyberpunk_css()
 inject_anime_css()
+render_anime_background()
 
 # Additional app-specific styles on top of cyberpunk theme
 st.markdown("""<style>
@@ -2359,6 +2360,10 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
+    # NAMI character + sound — at top of sidebar so always visible
+    render_nami_character()
+    render_cyberpunk_ambient()
+
     # Navigation mode selector
     ALL_NAV_PAGES = {
         "Dashboard": "⚡",
@@ -2485,9 +2490,7 @@ with st.sidebar:
             _clear_browser_session()
             st.rerun()
 
-    # NAMI anime character in sidebar
-    render_nami_character()
-    render_cyberpunk_ambient()
+    # Anime sidebar decoration (bottom)
     render_anime_sidebar_decor()
 
 interval = INTERVAL_MAP[interval_label]
