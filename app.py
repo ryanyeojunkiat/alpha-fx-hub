@@ -2,7 +2,7 @@
 Alpha FX Hub — Cyberpunk Trading Command Center
 Personal AI-powered trading assistant with neon city aesthetics.
 - Cyberpunk Neon City UI
-- ARIA AI Assistant (Grok-powered)
+- NAMI AI Assistant (Grok-powered)
 - News Dashboard + MT5 Analysis + Academy + Forum
 - Price Action engine V2
 """
@@ -41,12 +41,11 @@ from pa_engine import (
 # Import new cyberpunk modules
 from cyberpunk_theme import inject_cyberpunk_css, cyberpunk_header, neon_card, neon_metric
 from pages_news import render_news_dashboard
-from pages_grok_chat import render_grok_chat as render_aria_chat
+from pages_grok_chat import render_grok_chat as render_nami_chat
 from pages_mt5_analysis import render_mt5_analysis
 from pages_academy import render_academy
 from pages_forum import render_forum
-from cyberpunk_sounds import inject_cyberpunk_sounds
-from anime_theme import render_aria_character, render_anime_welcome, render_anime_sidebar_decor, inject_anime_css
+from anime_theme import render_nami_character, render_anime_welcome, render_anime_sidebar_decor, inject_anime_css
 from pages_tradingview import render_tradingview_page
 
 # GROK_API_KEY may not be in config, use xAI key pattern instead
@@ -65,10 +64,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Inject the cyberpunk theme + anime + sounds
+# Inject the cyberpunk theme + anime
 inject_cyberpunk_css()
 inject_anime_css()
-inject_cyberpunk_sounds()
 
 # Additional app-specific styles on top of cyberpunk theme
 st.markdown("""<style>
@@ -893,7 +891,7 @@ def _trend_plan(df:pd.DataFrame, symbol:str, regime:str, htf_bias:str) -> Plan:
 
     p2 = Plan(
         symbol=symbol, regime=regime, strategy="Trend Continuation", direction=direction,
-        execution_status="Ready to Enter" if ready else "Wait",
+        execution_status="Opportunity Detected" if ready else "Wait",
         setup_score=score, setup_grade=score_to_grade(score),
         entry=entry, sl=sl, tp1=tp1, tp2=tp2, tp3=tp3, rr=float(rr),
         score_breakdown=breakdown, confluence_count=confluence,
@@ -954,7 +952,7 @@ def _mean_rev_plan(df:pd.DataFrame, symbol:str, regime:str) -> Plan:
 
     p = Plan(
         symbol=symbol, regime=regime, strategy="Mean Reversion", direction=direction,
-        execution_status="Ready to Enter" if ready else "Wait",
+        execution_status="Opportunity Detected" if ready else "Wait",
         setup_score=score, setup_grade=score_to_grade(score),
         entry=entry, sl=sl, tp1=tp1, tp2=tp2, rr=float(rr),
         score_breakdown=breakdown, confluence_count=confluence, confluence_needed=2,
@@ -1004,7 +1002,7 @@ def _squeeze_plan(df:pd.DataFrame, symbol:str) -> Plan:
 
     p = Plan(
         symbol=symbol, regime="squeeze", strategy="BB Squeeze Breakout", direction=direction,
-        execution_status="Ready to Enter" if ready else "Wait",
+        execution_status="Opportunity Detected" if ready else "Wait",
         setup_score=score, setup_grade=score_to_grade(score),
         entry=entry, sl=sl, tp1=tp1, tp2=tp2, rr=float(rr),
         score_breakdown=breakdown, confluence_count=confluence, confluence_needed=2,
@@ -1094,7 +1092,7 @@ def _xau_plan(df5:pd.DataFrame, df15:pd.DataFrame, df1h:pd.DataFrame, symbol:str
 
     p2 = Plan(
         symbol=symbol, regime="gold_scalp", strategy="XAU 20pt Scalp", direction=direction,
-        execution_status="Ready to Enter" if score>=80 else "Wait",
+        execution_status="Opportunity Detected" if score>=80 else "Wait",
         setup_score=score, setup_grade=score_to_grade(score),
         entry=entry, sl=sl, tp1=tp1, tp2=tp2, rr=float(rr),
         score_breakdown=breakdown, confluence_count=confluence,
@@ -1266,7 +1264,7 @@ def select_plan(symbol:str, interval:str, bars:int, td_key:str) -> Tuple[pd.Data
         # Build session info
         sess_pts, sess_name = session_score(s, df.iloc[-1].get("time", pd.Timestamp.utcnow()))
 
-        ready_status = "Ready to Enter" if pa_plan.ready else "Wait"
+        ready_status = "Opportunity Detected" if pa_plan.ready else "Wait"
 
         plan = Plan(
             symbol=s,
@@ -1363,13 +1361,13 @@ def finalize_plan(plan:Plan, balance:float, risk_pct:float) -> Plan:
     plan.final_grade = score_to_grade(plan.final_score)
 
     # Block execution during high-risk conditions
-    if te_penalty <= -15 and plan.execution_status=="Ready to Enter":
+    if te_penalty <= -15 and plan.execution_status=="Opportunity Detected":
         plan.execution_status="HIGH NEWS RISK"
-    elif plan.news_risk=="HIGH" and plan.execution_status=="Ready to Enter":
+    elif plan.news_risk=="HIGH" and plan.execution_status=="Opportunity Detected":
         plan.execution_status="HIGH NEWS RISK"
-    elif getattr(plan, 'market_sentiment', '') == "RISK_OFF" and plan.direction == "Buy" and plan.execution_status == "Ready to Enter":
+    elif getattr(plan, 'market_sentiment', '') == "RISK_OFF" and plan.direction == "Buy" and plan.execution_status == "Opportunity Detected":
         plan.execution_status = "RISK OFF — WAIT"
-    elif getattr(plan, 'market_sentiment', '') == "RISK_ON" and plan.direction == "Sell" and plan.execution_status == "Ready to Enter":
+    elif getattr(plan, 'market_sentiment', '') == "RISK_ON" and plan.direction == "Sell" and plan.execution_status == "Opportunity Detected":
         plan.execution_status = "RISK ON — WAIT"
     return plan
 
@@ -1462,7 +1460,7 @@ def render_kv_panel(title, rows):
 def render_signal_badge(direction, status):
     if "HIGH NEWS" in status:
         cls, text = "signal-sell", "HIGH NEWS"
-    elif status != "Ready to Enter":
+    elif status != "Opportunity Detected":
         cls, text = "signal-wait", "WAIT"
     elif direction == "Buy":
         cls, text = "signal-buy", "BUY"
@@ -1743,7 +1741,7 @@ def _maybe_send_telegram(plan: Plan, notifier):
     """Auto-send Telegram for A/A+ signals (score>=80) with 30-min cooldown per symbol."""
     if not notifier:
         return
-    if plan.final_score < 80 or plan.execution_status != "Ready to Enter":
+    if plan.final_score < 80 or plan.execution_status != "Opportunity Detected":
         return
     if plan.direction not in ("Buy", "Sell"):
         return
@@ -1869,8 +1867,8 @@ border-radius:12px;padding:20px 32px;box-shadow:0 8px 32px rgba(0,0,0,0.6);text-
     # ── MT5 open positions ──
     mt5_positions = fetch_mt5_positions(_ma_tok, _ma_acc) if (_ma_tok and _ma_acc) else []
 
-    # ── SIGNAL OVERVIEW DASHBOARD (all symbols at a glance) ──
-    st.markdown("<div class='mono-title' style='font-size:13px;margin-bottom:6px;'>SIGNAL OVERVIEW — ALL SYMBOLS</div>", unsafe_allow_html=True)
+    # ── MARKET OVERVIEW DASHBOARD (all symbols at a glance) ──
+    st.markdown("<div class='mono-title' style='font-size:13px;margin-bottom:6px;'>MARKET OVERVIEW — ALL PAIRS</div>", unsafe_allow_html=True)
     overview_syms = [s for s in INTERNAL_SYMBOLS if s != symbol][:6]  # top 6 other symbols
     ov_cols = st.columns(min(len(overview_syms) + 1, 7))
     # Current symbol first (highlighted)
@@ -2050,7 +2048,7 @@ border-radius:12px;padding:20px 32px;box-shadow:0 8px 32px rgba(0,0,0,0.6);text-
             ("Risk $", f"${balance * risk_pct / 100:,.2f}", "warn"),
             ("Lot", fmt_num(plan.suggested_lot, 3), "good"),
             ("Status", plan.execution_status[:20],
-             "good" if plan.execution_status == "Ready to Enter" else "bad" if "HIGH NEWS" in plan.execution_status else "warn"),
+             "good" if plan.execution_status == "Opportunity Detected" else "bad" if "HIGH NEWS" in plan.execution_status else "warn"),
         ])
 
         # ── GROK AI CHAT ──
@@ -2058,9 +2056,9 @@ border-radius:12px;padding:20px 32px;box-shadow:0 8px 32px rgba(0,0,0,0.6);text-
 
 
 def render_grok_chat(plan: Plan, df: pd.DataFrame, symbol: str, current_price: float):
-    """Interactive Grok AI chat panel — user asks, Grok sees the full chart context."""
+    """Interactive NAMI AI chat panel — user asks, AI sees the full chart context."""
     xai_key = get_xai_key()
-    st.markdown("<div class='panel'><div class='mono-title'>GROK AI CHAT</div>", unsafe_allow_html=True)
+    st.markdown("<div class='panel'><div class='mono-title'>N.A.M.I ANALYSIS</div>", unsafe_allow_html=True)
 
     if not xai_key:
         st.markdown("<div style='font-size:12px;color:#4a5568;'>Add Grok API key in sidebar to enable AI chat</div></div>", unsafe_allow_html=True)
@@ -2168,7 +2166,7 @@ def render_backtest(td_key):
                     plan = _squeeze_plan(chunk, s)
                 else:
                     plan = _mean_rev_plan(chunk, s, regime)
-                if plan.execution_status != "Ready to Enter" or plan.entry is None:
+                if plan.execution_status != "Opportunity Detected" or plan.entry is None:
                     continue
                 if plan.setup_score < score_thresh:
                     continue
@@ -2322,6 +2320,13 @@ if SUPABASE_URL and SUPABASE_KEY:
     if not render_auth_page(_auth_client):
         st.stop()
 
+# Admin/Public Role System
+ADMIN_EMAIL = "junkiatyeo96@gmail.com"
+
+def is_admin():
+    user = st.session_state.get("user", {})
+    return user.get("email", "").lower() == ADMIN_EMAIL.lower()
+
 # Initialize session state
 if "active_trades" not in st.session_state:
     st.session_state.active_trades = []
@@ -2355,20 +2360,29 @@ with st.sidebar:
     """, unsafe_allow_html=True)
 
     # Navigation mode selector
-    NAV_PAGES = {
+    ALL_NAV_PAGES = {
         "Dashboard": "⚡",
         "TradingView": "📈",
         "News Intel": "📡",
         "MT5 Analysis": "📊",
-        "ARIA Chat": "🤖",
+        "NAMI AI": "🤖",
         "Academy": "🎓",
         "Community": "💬",
         "Backtest": "🧪",
         "Journal": "📓",
     }
 
+    # Filter pages based on role
+    ADMIN_PAGES = {"Dashboard", "Backtest", "MT5 Analysis", "Journal"}
+    PUBLIC_PAGES = {"TradingView", "News Intel", "NAMI AI", "Academy", "Community"}
+
+    if is_admin():
+        NAV_PAGES = ALL_NAV_PAGES
+    else:
+        NAV_PAGES = {k: v for k, v in ALL_NAV_PAGES.items() if k in PUBLIC_PAGES}
+
     if "nav_page" not in st.session_state:
-        st.session_state["nav_page"] = "Dashboard"
+        st.session_state["nav_page"] = "TradingView" if not is_admin() else "Dashboard"
 
     st.markdown("<div style='font-family:Orbitron,monospace;font-size:9px;color:#9d4edd;letter-spacing:.2em;padding:4px 12px;'>NAVIGATION</div>", unsafe_allow_html=True)
 
@@ -2385,7 +2399,7 @@ with st.sidebar:
 
     st.markdown("<div style='height:2px;background:linear-gradient(90deg,transparent,#9d4edd,transparent);margin:12px 0;'></div>", unsafe_allow_html=True)
 
-    # Trading settings (shown for Dashboard/Backtest)
+    # Trading settings (shown for Dashboard/Backtest/TradingView)
     current_page = st.session_state["nav_page"]
     if current_page in ("Dashboard", "Backtest", "TradingView"):
         st.markdown("<div style='font-family:Orbitron,monospace;font-size:9px;color:#00fff2;letter-spacing:.2em;padding:4px 0;'>TRADE CONFIG</div>", unsafe_allow_html=True)
@@ -2438,23 +2452,24 @@ with st.sidebar:
             except Exception as e:
                 st.error(str(e))
 
-    # MT5 section
-    with st.expander("📡 MT5 LIVE", expanded=False):
-        _ma_tok = st.text_input("MetaApi Token", value=st.session_state.get("ma_token", ""), type="password", key="ma_tok_inp")
-        _ma_acc = st.text_input("Account ID", value=st.session_state.get("ma_account", ""), key="ma_acc_inp")
-        _ma_sfx = st.text_input("Symbol suffix", value=st.session_state.get("ma_sym_suffix", ".r"), key="ma_sfx_inp")
-        if _ma_tok:
-            st.session_state["ma_token"] = _ma_tok
-        if _ma_acc:
-            st.session_state["ma_account"] = _ma_acc
-        st.session_state["ma_sym_suffix"] = _ma_sfx
-        _mab1, _mab2 = st.columns(2)
-        if _ma_tok and _ma_acc and _mab1.button("Test MT5"):
-            _ok, _msg = test_mt5_connection(_ma_tok, _ma_acc)
-            (st.success if _ok else st.error)(_msg)
-        if _ma_tok and _ma_acc and _mab2.button("Deploy"):
-            _ok, _msg = deploy_mt5_account(_ma_tok, _ma_acc)
-            (st.success if _ok else st.error)(_msg)
+    # MT5 section (admin only)
+    if is_admin():
+        with st.expander("📡 MT5 LIVE", expanded=False):
+            _ma_tok = st.text_input("MetaApi Token", value=st.session_state.get("ma_token", ""), type="password", key="ma_tok_inp")
+            _ma_acc = st.text_input("Account ID", value=st.session_state.get("ma_account", ""), key="ma_acc_inp")
+            _ma_sfx = st.text_input("Symbol suffix", value=st.session_state.get("ma_sym_suffix", ".r"), key="ma_sfx_inp")
+            if _ma_tok:
+                st.session_state["ma_token"] = _ma_tok
+            if _ma_acc:
+                st.session_state["ma_account"] = _ma_acc
+            st.session_state["ma_sym_suffix"] = _ma_sfx
+            _mab1, _mab2 = st.columns(2)
+            if _ma_tok and _ma_acc and _mab1.button("Test MT5"):
+                _ok, _msg = test_mt5_connection(_ma_tok, _ma_acc)
+                (st.success if _ok else st.error)(_msg)
+            if _ma_tok and _ma_acc and _mab2.button("Deploy"):
+                _ok, _msg = deploy_mt5_account(_ma_tok, _ma_acc)
+                (st.success if _ok else st.error)(_msg)
 
     # Logout
     if st.session_state.get("user"):
@@ -2470,15 +2485,23 @@ with st.sidebar:
             _clear_browser_session()
             st.rerun()
 
-    # ARIA anime character in sidebar
-    render_aria_character()
+    # NAMI anime character in sidebar
+    render_nami_character()
     render_anime_sidebar_decor()
 
 interval = INTERVAL_MAP[interval_label]
 
 # ── MAIN PAGE ROUTING ──
+# Check if user has access to requested page
+if not is_admin() and current_page in {"Dashboard", "Backtest", "MT5 Analysis", "Journal"}:
+    st.warning("This page is only available to admin users. Redirecting to TradingView...")
+    current_page = "TradingView"
+
 if current_page == "Dashboard":
-    # Show ARIA welcome on dashboard
+    if not is_admin():
+        st.error("Access denied")
+        st.stop()
+    # Show NAMI welcome on dashboard
     user_email = st.session_state.get("user", {}).get("email", "Trader") if st.session_state.get("user") else "Trader"
     user_name = user_email.split("@")[0] if "@" in user_email else user_email
     render_anime_welcome(user_name)
@@ -2490,22 +2513,25 @@ elif current_page == "TradingView":
     render_tradingview_page(_grok_key)
 
 elif current_page == "News Intel":
-    cyberpunk_header("NEWS INTELLIGENCE", "Real-time market intel powered by ARIA")
+    cyberpunk_header("NEWS INTELLIGENCE", "Real-time market intel powered by NAMI")
     _grok_key = get_xai_key()
     _te_key = TE_API_KEY
     render_news_dashboard(_grok_key, _te_key)
 
 elif current_page == "MT5 Analysis":
+    if not is_admin():
+        st.error("Access denied")
+        st.stop()
     cyberpunk_header("MT5 TRADE ANALYSIS", "Deep-dive into your trading performance")
     _ma_tok_val = get_ma_token()
     _ma_acc_val = get_ma_account()
     _grok_key = get_xai_key()
     render_mt5_analysis(_ma_tok_val, _ma_acc_val, _grok_key)
 
-elif current_page == "ARIA Chat":
-    cyberpunk_header("A.R.I.A", "AI Research & Intelligence Assistant")
+elif current_page == "NAMI AI":
+    cyberpunk_header("N.A.M.I", "Neural Algorithmic Market Intelligence")
     _grok_key = get_xai_key()
-    render_aria_chat(_grok_key)
+    render_nami_chat(_grok_key)
 
 elif current_page == "Academy":
     cyberpunk_header("TRADING ACADEMY", "Level up your trading skills")
@@ -2516,7 +2542,13 @@ elif current_page == "Community":
     render_forum()
 
 elif current_page == "Backtest":
+    if not is_admin():
+        st.error("Access denied")
+        st.stop()
     render_backtest(get_td_key())
 
 elif current_page == "Journal":
+    if not is_admin():
+        st.error("Access denied")
+        st.stop()
     render_journal()

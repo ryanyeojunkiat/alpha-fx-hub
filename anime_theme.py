@@ -1,20 +1,21 @@
 """
 Anime Visual Theme Module for Alpha FX Hub
-Adds ARIA AI assistant character and anime-inspired cyberpunk aesthetics
+Adds N.A.M.I AI assistant character and anime-inspired cyberpunk aesthetics
 """
 
 import streamlit as st
+import textwrap
 from datetime import datetime
 
 
-def render_aria_character():
+def render_nami_character():
     """
-    Renders ARIA - the cyberpunk anime AI assistant
+    Renders N.A.M.I — Neural Algorithmic Market Intelligence
     A beautiful anime girl character with neon effects and floating animation
     Uses detailed SVG art for a true anime waifu mascot
     """
 
-    aria_svg = """
+    nami_svg = textwrap.dedent("""
     <style>
         @keyframes float {
             0%, 100% { transform: translateY(0px) rotate(0deg); }
@@ -31,22 +32,22 @@ def render_aria_character():
             50% { opacity: 0.6; }
         }
 
-        .aria-character {
+        .nami-character {
             animation: float 3s ease-in-out infinite;
             filter: drop-shadow(0 0 15px #ff00ff) drop-shadow(0 0 30px #00ffff);
         }
 
-        .aria-aura {
+        .nami-aura {
             animation: glow-pulse 2s ease-in-out infinite;
         }
 
-        .aria-eye {
+        .nami-eye {
             animation: eye-sparkle 1.5s ease-in-out infinite;
         }
     </style>
 
     <div style="display: flex; justify-content: center; margin: 20px 0;">
-        <svg viewBox="0 0 200 320" width="200" height="320" class="aria-aura">
+        <svg viewBox="0 0 200 320" width="200" height="320" class="nami-aura">
             <!-- Neon Aura Background -->
             <defs>
                 <radialGradient id="auraGradient" cx="50%" cy="50%" r="50%">
@@ -86,7 +87,7 @@ def render_aria_character():
             <ellipse cx="132" cy="95" rx="10" ry="15" fill="url(#skinGradient)" stroke="#ff69b4" stroke-width="1"/>
 
             <!-- Eyes (large and expressive - anime style) -->
-            <g class="aria-eye">
+            <g class="nami-eye">
                 <!-- Left Eye -->
                 <ellipse cx="82" cy="105" rx="8" ry="12" fill="#ffffff" stroke="#00ffff" stroke-width="1.5"/>
                 <circle cx="82" cy="107" r="5" fill="#00ffff" opacity="0.9"/>
@@ -179,22 +180,22 @@ def render_aria_character():
     </div>
 
     <div style="text-align: center; margin-top: 10px;">
-        <p style="color: #ff00ff; font-weight: bold; font-size: 14px; margin: 5px 0;">A.R.I.A</p>
-        <p style="color: #00ffff; font-size: 11px; margin: 0; letter-spacing: 2px;">AI TRADING GODDESS</p>
+        <p style="color: #ff00ff; font-weight: bold; font-size: 14px; margin: 5px 0;">N.A.M.I</p>
+        <p style="color: #00ffff; font-size: 11px; margin: 0; letter-spacing: 2px;">NEURAL ALGORITHMIC MARKET INTELLIGENCE</p>
     </div>
-    """
+    """).strip()
 
-    st.markdown(aria_svg, unsafe_allow_html=True)
+    st.markdown(nami_svg, unsafe_allow_html=True)
 
 
 def render_anime_welcome(username="Trader"):
     """
-    Renders anime welcome splash screen with ARIA greeting
+    Renders anime welcome splash screen with N.A.M.I greeting
     Features animated text, speech bubble, and sparkle effects
     Appears at the top of the dashboard
     """
 
-    welcome_html = """
+    welcome_html = textwrap.dedent("""
     <style>
         @keyframes sparkle-burst {
             0% {
@@ -255,7 +256,7 @@ def render_anime_welcome(username="Trader"):
             text-transform: uppercase;
         }
 
-        .aria-speech-bubble {
+        .nami-speech-bubble {
             background: linear-gradient(135deg, #00ffff 0%, #ff00ff 100%);
             padding: 2px;
             border-radius: 15px;
@@ -317,20 +318,19 @@ def render_anime_welcome(username="Trader"):
         <div class="welcome-title">Welcome Back!</div>
 
         <div style="position: relative; display: inline-block; width: 100%;">
-            <div class="aria-speech-bubble">
+            <div class="nami-speech-bubble">
                 <div class="bubble-tail"></div>
                 <div class="bubble-inner">
-                    Ready to conquer the markets, <span class="welcome-username">PLACEHOLDER_USERNAME</span>?
-                    Let's make those gains!
+                    Ready to navigate the markets, <span class="welcome-username">PLACEHOLDER_USERNAME</span>? Let's find that treasure!
                 </div>
             </div>
         </div>
 
         <div class="welcome-subtitle">
-            Powered by A.R.I.A Trading System
+            Powered by N.A.M.I Neural Algorithmic Market Intelligence
         </div>
     </div>
-    """
+    """).strip()
 
     st.markdown(welcome_html.replace("PLACEHOLDER_USERNAME", username), unsafe_allow_html=True)
 
@@ -338,22 +338,12 @@ def render_anime_welcome(username="Trader"):
 def render_anime_sidebar_decor():
     """
     Adds anime-themed decorative elements to sidebar
-    Includes anime icons, Dragon Ball scouter power level, and falling cherry blossoms
+    Compact design to avoid scroll issues
+    Includes anime icons and cherry blossom animations
     """
 
-    sidebar_decor = """
+    sidebar_decor = textwrap.dedent("""
     <style>
-        @keyframes fall {
-            0% {
-                top: -10px;
-                opacity: 1;
-            }
-            100% {
-                top: 100vh;
-                opacity: 0;
-            }
-        }
-
         @keyframes sway {
             0%, 100% { transform: translateX(0px); }
             50% { transform: translateX(10px); }
@@ -381,14 +371,24 @@ def render_anime_sidebar_decor():
             }
         }
 
+        @keyframes cherry-fall {
+            0% {
+                top: -10px;
+                opacity: 1;
+            }
+            100% {
+                top: 60px;
+                opacity: 0;
+            }
+        }
+
         .cherry-blossom {
-            position: fixed;
-            width: 10px;
-            height: 10px;
+            position: absolute;
+            width: 8px;
+            height: 8px;
             background: radial-gradient(circle, #ff69b4 0%, #ff1493 100%);
             border-radius: 50%;
             opacity: 0.6;
-            z-index: 0;
             pointer-events: none;
             box-shadow: 0 0 5px #ff1493;
         }
@@ -405,7 +405,7 @@ def render_anime_sidebar_decor():
             border: 2px solid #00ff00;
             border-radius: 10px;
             padding: 12px;
-            margin: 15px 0;
+            margin: 10px 0;
             text-align: center;
             box-shadow: inset 0 0 10px rgba(0, 255, 0, 0.3), 0 0 15px rgba(0, 255, 0, 0.5);
             animation: scouter-scan 3s ease-in-out infinite;
@@ -450,7 +450,7 @@ def render_anime_sidebar_decor():
         .anime-divider {
             height: 3px;
             background: linear-gradient(90deg, transparent 0%, #ff1493 20%, #00ffff 50%, #ff1493 80%, transparent 100%);
-            margin: 15px 0;
+            margin: 10px 0;
             border-radius: 2px;
             box-shadow: 0 0 10px rgba(255, 0, 255, 0.5);
         }
@@ -472,16 +472,21 @@ def render_anime_sidebar_decor():
 
         .pirate-flag {
             display: inline-block;
-            font-size: 18px;
+            font-size: 16px;
             margin: 0 5px;
-            animation: float 3s ease-in-out infinite;
+        }
+
+        .blossom-container {
+            position: relative;
+            height: 50px;
+            margin-bottom: 10px;
+            overflow: hidden;
         }
     </style>
 
-    <!-- Cherry blossom container -->
-    <div id="blossomContainer" style="position: relative; width: 100%; height: 10px; margin-bottom: 20px;"></div>
+    <div class="blossom-container" id="blossomContainer"></div>
 
-    <div style="background: rgba(15, 15, 35, 0.8); border-radius: 10px; padding: 15px; margin: 10px 0;">
+    <div style="background: rgba(15, 15, 35, 0.8); border-radius: 10px; padding: 12px; margin: 10px 0;">
         <!-- Anime divider -->
         <div class="anime-divider"></div>
 
@@ -491,11 +496,11 @@ def render_anime_sidebar_decor():
             <div class="power-meter">
                 <div class="power-bar"></div>
             </div>
-            <div class="power-value" id="powerValue">POWER LEVEL: 9001+</div>
+            <div class="power-value" id="powerValue">POWER: 9001+</div>
         </div>
 
         <!-- Navigation with anime icons -->
-        <div style="margin-top: 15px;">
+        <div style="margin-top: 10px; font-size: 12px;">
             <div class="nav-item-anime">
                 <span class="anime-nav-icon">📊</span> Dashboard
             </div>
@@ -505,52 +510,49 @@ def render_anime_sidebar_decor():
             <div class="nav-item-anime">
                 <span class="anime-nav-icon">🎐</span> Portfolio
             </div>
-            <div class="nav-item-anime">
-                <span class="anime-nav-icon">🔥</span> Positions
-            </div>
-            <div class="nav-item-anime">
-                <span class="anime-nav-icon">💎</span> Strategies
-            </div>
         </div>
 
         <!-- Divider -->
-        <div class="anime-divider" style="margin-top: 15px;"></div>
+        <div class="anime-divider" style="margin-top: 10px;"></div>
 
         <!-- Pirate flag nod to One Piece -->
-        <div style="text-align: center; margin-top: 10px; font-size: 12px; color: #ff1493;">
+        <div style="text-align: center; margin-top: 8px; font-size: 11px; color: #ff1493;">
             <span class="pirate-flag">🏴</span>
-            <span style="letter-spacing: 1px;">NAVIGATE THE SEAS</span>
+            <span style="letter-spacing: 1px;">NAVIGATE MARKETS</span>
             <span class="pirate-flag">🏴</span>
         </div>
     </div>
 
     <script>
-        // Generate falling cherry blossoms
+        // Generate falling cherry blossoms in sidebar
         const blossomContainer = document.getElementById('blossomContainer');
         if (blossomContainer) {
-            for (let i = 0; i < 8; i++) {
+            for (let i = 0; i < 5; i++) {
                 const blossom = document.createElement('div');
                 blossom.className = 'cherry-blossom';
                 const left = Math.random() * 100;
-                const delay = Math.random() * 3;
-                const duration = 4 + Math.random() * 2;
+                const delay = Math.random() * 2;
+                const duration = 3 + Math.random() * 1.5;
 
                 blossom.style.left = left + '%';
-                blossom.style.animation = `fall ${duration}s linear ${delay}s infinite, sway 2s ease-in-out ${delay}s infinite`;
+                blossom.style.animation = `cherry-fall ${duration}s linear ${delay}s infinite, sway 2s ease-in-out ${delay}s infinite`;
                 blossomContainer.appendChild(blossom);
             }
         }
 
         // Update power level display with random anime values
         function updatePowerLevel() {
-            const values = ['OVER 9000!!', 'CRITICAL POWER', 'LEGENDARY MODE', '超パワー', 'SAIYAN BOOST', 'DEMON AWAKENED'];
+            const values = ['OVER 9000!!', 'CRITICAL POWER', 'LEGENDARY MODE', 'SAIYAN BOOST', 'DEMON AWAKENED'];
             const randomValue = values[Math.floor(Math.random() * values.length)];
-            document.getElementById('powerValue').textContent = 'POWER LEVEL: ' + randomValue;
+            const powerValueEl = document.getElementById('powerValue');
+            if (powerValueEl) {
+                powerValueEl.textContent = 'POWER: ' + randomValue;
+            }
         }
 
         setInterval(updatePowerLevel, 5000);
     </script>
-    """
+    """).strip()
 
     st.markdown(sidebar_decor, unsafe_allow_html=True)
 
@@ -558,10 +560,10 @@ def render_anime_sidebar_decor():
 def inject_anime_css():
     """
     Injects global CSS animations and styles for anime theme
-    Includes cherry blossom particles, speech bubbles, katana dividers, and effects
+    Includes cherry blossom particles, speech bubbles, and effects
     """
 
-    anime_css = """
+    anime_css = textwrap.dedent("""
     <style>
         /* Global anime-themed styles */
 
@@ -626,8 +628,8 @@ def inject_anime_css():
             box-shadow: 0 0 4px #ff1493;
         }
 
-        /* Speech bubbles for ARIA messages */
-        .aria-message {
+        /* Speech bubbles for N.A.M.I messages */
+        .nami-message {
             background: linear-gradient(135deg, #00ffff 0%, #ff00ff 100%);
             padding: 2px;
             border-radius: 12px;
@@ -636,7 +638,7 @@ def inject_anime_css():
             max-width: 90%;
         }
 
-        .aria-message-inner {
+        .nami-message-inner {
             background: #0a0a15;
             border-radius: 10px;
             padding: 12px 16px;
@@ -645,7 +647,7 @@ def inject_anime_css():
             position: relative;
         }
 
-        .aria-message-tail {
+        .nami-message-tail {
             position: absolute;
             width: 0;
             height: 0;
@@ -851,15 +853,15 @@ def inject_anime_css():
             createFallingPetals();
         }
     </script>
-    """
+    """).strip()
 
     st.markdown(anime_css, unsafe_allow_html=True)
 
 
-# Convenience function to apply full anime theme
 def apply_anime_theme():
     """
     Applies the complete anime theme to the Streamlit app
+    Convenience function that calls all theme components
     Call this once at the top of your main app
     """
     inject_anime_css()

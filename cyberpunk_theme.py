@@ -1,5 +1,6 @@
 import streamlit as st
 from typing import Optional
+import textwrap
 
 
 def inject_cyberpunk_css():
@@ -511,6 +512,7 @@ def cyberpunk_header(title: str, subtitle: str = ""):
 
     header_html = f'<div style="text-align: center; margin: 30px 0 40px 0;"><h1 class="cyberpunk-glitch-title" style="font-family: \'Orbitron\', sans-serif; font-size: 3.5rem; font-weight: 900; color: #00fff2; text-shadow: 0 0 20px rgba(0, 255, 242, 0.7), 0 0 40px rgba(0, 255, 242, 0.4), 0 0 60px rgba(0, 255, 242, 0.2); letter-spacing: 4px; margin: 0; padding: 20px 0; animation: glitch 2s infinite;">{title}</h1>{subtitle_html}</div>'
 
+    header_html = textwrap.dedent(header_html).strip()
     st.markdown(header_html, unsafe_allow_html=True)
 
 
@@ -556,6 +558,7 @@ def neon_card(title: str, content: str, color: str = "#00fff2"):
     </div>
     """
 
+    card_html = textwrap.dedent(card_html).strip()
     st.markdown(card_html, unsafe_allow_html=True)
 
 
@@ -590,4 +593,5 @@ def neon_metric(label: str, value: str, color: str = "#00fff2"):
     </div>
     """
 
+    metric_html = textwrap.dedent(metric_html).strip()
     st.markdown(metric_html, unsafe_allow_html=True)
