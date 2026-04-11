@@ -1,11 +1,10 @@
 """
-Alpha FX Hub — V12 Clean Architecture Trading Terminal
-Rebuilt from V12 production code with modern structure.
-- Single-file Streamlit app
-- 3-column dashboard layout
-- 7-component scoring engine (max 100 pts)
-- Grok AI as post-entry advisor
-- Live/Backtest/Journal modes
+Alpha FX Hub — Cyberpunk Trading Command Center
+Personal AI-powered trading assistant with neon city aesthetics.
+- Cyberpunk Neon City UI
+- ARIA AI Assistant (Grok-powered)
+- News Dashboard + MT5 Analysis + Academy + Forum
+- Price Action engine V2
 """
 
 import os, json, re
@@ -39,6 +38,14 @@ from pa_engine import (
     generate_plan as pa_generate_plan, get_htf_structure, TradePlan as PATradePlan
 )
 
+# Import new cyberpunk modules
+from cyberpunk_theme import inject_cyberpunk_css, cyberpunk_header, neon_card, neon_metric
+from pages_news import render_news_dashboard
+from pages_grok_chat import render_grok_chat as render_aria_chat
+from pages_mt5_analysis import render_mt5_analysis
+from pages_academy import render_academy
+from pages_forum import render_forum
+
 # GROK_API_KEY may not be in config, use xAI key pattern instead
 try:
     from config import GROK_API_KEY
@@ -49,32 +56,37 @@ except ImportError:
 # PAGE CONFIG
 # ============================================================
 st.set_page_config(
-    page_title=f"{PLATFORM_NAME} V12",
-    page_icon="📈",
+    page_title="ALPHA FX HUB // NEON CITY",
+    page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
+# Inject the cyberpunk theme
+inject_cyberpunk_css()
+
+# Additional app-specific styles on top of cyberpunk theme
 st.markdown("""<style>
-html,body,[data-testid="stAppViewContainer"]{background:#080c10!important;color:#e8edf2!important;font-family:'DM Sans','Segoe UI',sans-serif;}
-[data-testid="stSidebar"]{background:#0d1117!important;border-right:1px solid rgba(255,255,255,0.06)!important;}
-[data-testid="stHeader"]{background:transparent!important;}
-[data-testid="stMetricValue"]{color:#e8edf2!important;font-family:'Space Mono',monospace!important;font-size:13px!important;}
-[data-testid="stMetricLabel"]{color:#8b9ab0!important;font-size:10px!important;}
-.stButton>button{background:rgba(0,212,170,0.08)!important;border:1px solid rgba(0,212,170,0.25)!important;color:#00d4aa!important;font-family:'Space Mono',monospace!important;border-radius:6px!important;}
-.stSelectbox>div>div,.stNumberInput>div>div{background:#131a22!important;border-color:rgba(255,255,255,0.1)!important;color:#e8edf2!important;border-radius:6px!important;}
-.signal-box{padding:10px 18px;border-radius:8px;font-family:'Space Mono',monospace;font-size:13px;font-weight:700;letter-spacing:.08em;text-align:center;display:inline-block;min-width:180px;}
-.signal-buy{background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.3);color:#10b981;}
-.signal-sell{background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);color:#ef4444;}
-.signal-wait{background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.3);color:#f59e0b;}
-.panel{background:#0d1117;border:1px solid rgba(255,255,255,0.07);border-radius:8px;padding:12px 14px;margin-bottom:10px;}
-.mono-title{color:#00d4aa;font-size:11px;font-family:'Space Mono',monospace;letter-spacing:.12em;margin-bottom:8px;}
-.kv{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05);font-size:13px;}
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Space+Mono:wght@400;700&family=Share+Tech+Mono&display=swap');
+.signal-box{padding:10px 18px;border-radius:8px;font-family:'Orbitron',monospace;font-size:13px;font-weight:700;letter-spacing:.08em;text-align:center;display:inline-block;min-width:180px;text-shadow:0 0 10px currentColor;}
+.signal-buy{background:rgba(57,255,20,.12);border:1px solid rgba(57,255,20,.4);color:#39ff14;box-shadow:0 0 15px rgba(57,255,20,.2);}
+.signal-sell{background:rgba(255,45,123,.12);border:1px solid rgba(255,45,123,.4);color:#ff2d7b;box-shadow:0 0 15px rgba(255,45,123,.2);}
+.signal-wait{background:rgba(157,78,221,.12);border:1px solid rgba(157,78,221,.4);color:#9d4edd;box-shadow:0 0 15px rgba(157,78,221,.2);}
+.panel{background:linear-gradient(135deg,#0a0a1a 0%,#0d0b1e 100%);border:1px solid rgba(0,255,242,0.12);border-radius:8px;padding:12px 14px;margin-bottom:10px;box-shadow:0 0 10px rgba(0,255,242,0.05);}
+.mono-title{color:#00fff2;font-size:11px;font-family:'Orbitron',monospace;letter-spacing:.15em;margin-bottom:8px;text-shadow:0 0 8px rgba(0,255,242,0.5);}
+.kv{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid rgba(0,255,242,0.06);font-size:13px;}
 .kv:last-child{border-bottom:none;}
-.muted{color:#8b9ab0;}.good{color:#10b981;}.bad{color:#ef4444;}.warn{color:#f59e0b;}.info{color:#0ea5e9;}
-.ai-bubble{background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25);border-left:3px solid #6366f1;border-radius:8px;padding:12px 14px;margin:8px 0;font-size:12px;color:#c7d2fe;line-height:1.75;}
-.ai-header{font-family:'Space Mono',monospace;font-size:10px;color:#6366f1;letter-spacing:.1em;margin-bottom:6px;}
+.muted{color:#8b9ab0;}.good{color:#39ff14;}.bad{color:#ff2d7b;}.warn{color:#9d4edd;}.info{color:#00fff2;}
+.ai-bubble{background:rgba(157,78,221,.08);border:1px solid rgba(157,78,221,.25);border-left:3px solid #9d4edd;border-radius:8px;padding:12px 14px;margin:8px 0;font-size:12px;color:#c7d2fe;line-height:1.75;}
+.ai-header{font-family:'Orbitron',monospace;font-size:10px;color:#9d4edd;letter-spacing:.12em;margin-bottom:6px;text-shadow:0 0 6px rgba(157,78,221,0.5);}
 .conf-bar{height:6px;border-radius:3px;margin:4px 0;}
+/* Anime assistant floating avatar */
+.aria-avatar{position:fixed;bottom:20px;right:20px;z-index:9999;width:80px;height:80px;border-radius:50%;border:2px solid #ff2d7b;box-shadow:0 0 20px rgba(255,45,123,0.4),0 0 40px rgba(255,45,123,0.2);cursor:pointer;transition:all 0.3s ease;background:linear-gradient(135deg,#1a1a3e,#0d0b1e);display:flex;align-items:center;justify-content:center;font-size:36px;}
+.aria-avatar:hover{transform:scale(1.1);box-shadow:0 0 30px rgba(255,45,123,0.6),0 0 60px rgba(255,45,123,0.3);}
+/* Neon sidebar nav */
+.nav-item{padding:10px 16px;margin:4px 8px;border-radius:8px;font-family:'Orbitron',monospace;font-size:11px;letter-spacing:.1em;cursor:pointer;transition:all 0.3s ease;border:1px solid transparent;}
+.nav-item:hover{border-color:rgba(0,255,242,0.3);background:rgba(0,255,242,0.05);}
+.nav-active{border-color:#00fff2!important;background:rgba(0,255,242,0.1)!important;color:#00fff2!important;box-shadow:0 0 15px rgba(0,255,242,0.15);}
 </style>""", unsafe_allow_html=True)
 
 # ============================================================
@@ -1766,9 +1778,10 @@ def _maybe_send_telegram(plan: Plan, notifier):
 
 
 # ============================================================
-# MAIN RENDER: LIVE ANALYSIS (V12-style 3-column dashboard)
+# MAIN RENDER: LIVE ANALYSIS (Cyberpunk Dashboard)
 # ============================================================
 def render_live(symbol, interval, bars, balance, risk_pct, notifier):
+    cyberpunk_header("LIVE DASHBOARD", f"{symbol} // Real-time Price Action Analysis")
     is_open, mkt = market_is_open(symbol)
     try:
         df, plan = select_plan(symbol, interval, bars, get_td_key())
@@ -2122,7 +2135,7 @@ def render_grok_chat(plan: Plan, df: pd.DataFrame, symbol: str, current_price: f
 # BACKTEST ENGINE
 # ============================================================
 def render_backtest(td_key):
-    st.markdown("<div style='font-family:Space Mono,monospace;font-size:18px;color:#00d4aa;letter-spacing:.12em;padding:4px 0 12px;'>BACKTEST ENGINE</div>", unsafe_allow_html=True)
+    cyberpunk_header("BACKTEST ENGINE", "Test your strategies against historical data")
     bc1, bc2, bc3, bc4 = st.columns(4)
     bt_sym = bc1.selectbox("Symbol", INTERNAL_SYMBOLS, index=INTERNAL_SYMBOLS.index("XAUUSD") if "XAUUSD" in INTERNAL_SYMBOLS else 0, key="bt_sym")
     bt_int = bc2.selectbox("Interval", ["15min", "1h", "4h"], index=0, key="bt_int")
@@ -2257,7 +2270,7 @@ def save_journal(journal: List[dict]):
         pass
 
 def render_journal():
-    st.markdown("<div style='font-family:Space Mono,monospace;font-size:18px;color:#00d4aa;letter-spacing:.12em;padding:4px 0 12px;'>TRADE JOURNAL</div>", unsafe_allow_html=True)
+    cyberpunk_header("TRADE JOURNAL", "Track your performance, learn from every trade")
     j = load_journal()
     if not j:
         st.info("No trades logged yet. Enter a live trade and close it to start recording.")
@@ -2319,76 +2332,131 @@ if TELEGRAM_BOT_TOKEN and TELEGRAM_PRIVATE_CHANNEL_ID:
         public_channel_id=TELEGRAM_PUBLIC_CHANNEL_ID,
     )
 
-# ── SIDEBAR ──
+# ── CYBERPUNK SIDEBAR ──
 with st.sidebar:
-    st.markdown(f"<div style='font-family:Space Mono,monospace;font-size:11px;color:#00d4aa;letter-spacing:.12em;padding:8px 0 12px;'>{PLATFORM_NAME}<br><span style='color:#4a5568;'>{APP_VERSION}</span></div>", unsafe_allow_html=True)
-    mode = st.radio("Mode", ["Live Analysis", "Backtest", "Journal"], index=0, label_visibility="collapsed")
-    st.markdown("---")
-    auto_refresh = st.toggle("Auto Refresh", value=True)
-    refresh_sec = st.selectbox("Interval (s)", [15, 30, 60, 120], index=1)
-    if auto_refresh and st_autorefresh:
-        st_autorefresh(interval=int(refresh_sec) * 1000, key="ar_v12")
-    st.markdown("---")
-    symbol = st.selectbox("Symbol", INTERNAL_SYMBOLS, index=INTERNAL_SYMBOLS.index("XAUUSD") if "XAUUSD" in INTERNAL_SYMBOLS else 0)
-    interval_label = st.selectbox("Interval", list(INTERVAL_MAP.keys()), index=2)
-    bars = st.slider("Bars", 220, 1000, 400, 20)
-    balance = st.number_input("Balance (USD)", min_value=10.0, value=500.0, step=50.0)
-    risk_pct = st.number_input("Risk %", min_value=0.1, max_value=5.0, value=1.0, step=0.1)
-    st.markdown("---")
-    st.markdown("<div style='font-size:11px;color:#8b9ab0;font-family:Space Mono,monospace;margin-bottom:4px;'>API KEYS</div>", unsafe_allow_html=True)
-    _td = st.text_input("Twelve Data", value=st.session_state.get("td_key", _ENV_TD), type="password", key="td_inp", placeholder="paste key...")
-    _xai = st.text_input("xAI Grok", value=st.session_state.get("xai_key", _ENV_XAI), type="password", key="xai_inp", placeholder="paste key...")
-    if _td:
-        st.session_state["td_key"] = _td
-    if _xai:
-        st.session_state["xai_key"] = _xai
-    _GROK_MODELS = ["grok-4-1-fast-non-reasoning", "grok-4-1-fast-reasoning", "grok-4.20-0309-non-reasoning"]
-    _gm = st.selectbox("Grok Model", _GROK_MODELS, index=0, key="grok_model_sel")
-    st.session_state["grok_model"] = _gm
-    td_ok = "OK" if _td else "X"
-    xai_ok = "OK" if _xai else "X"
-    st.markdown(f"<div style='font-size:11px;color:#4a5568;font-family:Space Mono,monospace;'>{td_ok} TD &nbsp; {xai_ok} xAI</div>", unsafe_allow_html=True)
-    c1, c2 = st.columns(2)
-    if _xai and c1.button("Test Grok"):
-        ok, msg = test_grok_connection(_xai)
-        (st.success if ok else st.error)(msg)
-    if _xai and c2.button("List Models"):
-        try:
-            _r = requests.get("https://api.x.ai/v1/models",
-                              headers={"Authorization": f"Bearer {_xai}"}, timeout=10)
-            if _r.status_code == 200:
-                _ids = [m["id"] for m in _r.json().get("data", [])]
-                st.success("Available: " + ", ".join(_ids) if _ids else "No models returned")
-            else:
-                st.error(f"HTTP {_r.status_code}: {_r.text[:120]}")
-        except Exception as e:
-            st.error(str(e))
+    # Neon logo header
+    st.markdown("""
+    <div style='text-align:center;padding:16px 0 8px;'>
+        <div style='font-family:Orbitron,monospace;font-size:14px;font-weight:900;color:#00fff2;letter-spacing:.2em;
+                    text-shadow:0 0 10px rgba(0,255,242,0.6),0 0 20px rgba(0,255,242,0.3);'>
+            ALPHA FX HUB
+        </div>
+        <div style='font-family:Share Tech Mono,monospace;font-size:10px;color:#ff2d7b;letter-spacing:.15em;margin-top:4px;
+                    text-shadow:0 0 8px rgba(255,45,123,0.4);'>
+            NEON CITY // COMMAND CENTER
+        </div>
+        <div style='height:2px;background:linear-gradient(90deg,transparent,#00fff2,#ff2d7b,#9d4edd,transparent);margin:10px 0;'></div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    st.markdown("---")
-    st.markdown("<div style='font-size:11px;color:#00d4aa;font-family:Space Mono,monospace;margin-bottom:4px;'>MT5 LIVE (MetaApi)</div>", unsafe_allow_html=True)
-    _ma_tok = st.text_input("MetaApi Token", value=st.session_state.get("ma_token", ""), type="password", key="ma_tok_inp")
-    _ma_acc = st.text_input("Account ID", value=st.session_state.get("ma_account", ""), key="ma_acc_inp")
-    _ma_sfx = st.text_input("Symbol suffix", value=st.session_state.get("ma_sym_suffix", ".r"), key="ma_sfx_inp")
-    if _ma_tok:
-        st.session_state["ma_token"] = _ma_tok
-    if _ma_acc:
-        st.session_state["ma_account"] = _ma_acc
-    st.session_state["ma_sym_suffix"] = _ma_sfx
-    _mab1, _mab2 = st.columns(2)
-    if _ma_tok and _ma_acc and _mab1.button("Test MT5"):
-        _ok, _msg = test_mt5_connection(_ma_tok, _ma_acc)
-        (st.success if _ok else st.error)(_msg)
-    if _ma_tok and _ma_acc and _mab2.button("Deploy"):
-        _ok, _msg = deploy_mt5_account(_ma_tok, _ma_acc)
-        (st.success if _ok else st.error)(_msg)
+    # Navigation mode selector
+    NAV_PAGES = {
+        "Dashboard": "⚡",
+        "News Intel": "📡",
+        "MT5 Analysis": "📊",
+        "ARIA Chat": "🤖",
+        "Academy": "🎓",
+        "Community": "💬",
+        "Backtest": "🧪",
+        "Journal": "📓",
+    }
+
+    if "nav_page" not in st.session_state:
+        st.session_state["nav_page"] = "Dashboard"
+
+    st.markdown("<div style='font-family:Orbitron,monospace;font-size:9px;color:#9d4edd;letter-spacing:.2em;padding:4px 12px;'>NAVIGATION</div>", unsafe_allow_html=True)
+
+    for page_name, icon in NAV_PAGES.items():
+        is_active = st.session_state["nav_page"] == page_name
+        if st.button(
+            f"{icon}  {page_name.upper()}",
+            key=f"nav_{page_name}",
+            use_container_width=True,
+            type="primary" if is_active else "secondary",
+        ):
+            st.session_state["nav_page"] = page_name
+            st.rerun()
+
+    st.markdown("<div style='height:2px;background:linear-gradient(90deg,transparent,#9d4edd,transparent);margin:12px 0;'></div>", unsafe_allow_html=True)
+
+    # Trading settings (shown for Dashboard/Backtest)
+    current_page = st.session_state["nav_page"]
+    if current_page in ("Dashboard", "Backtest"):
+        st.markdown("<div style='font-family:Orbitron,monospace;font-size:9px;color:#00fff2;letter-spacing:.2em;padding:4px 0;'>TRADE CONFIG</div>", unsafe_allow_html=True)
+        if current_page == "Dashboard":
+            auto_refresh = st.toggle("Auto Refresh", value=True)
+            refresh_sec = st.selectbox("Interval (s)", [15, 30, 60, 120], index=1)
+            if auto_refresh and st_autorefresh:
+                st_autorefresh(interval=int(refresh_sec) * 1000, key="ar_v12")
+        symbol = st.selectbox("Symbol", INTERNAL_SYMBOLS, index=INTERNAL_SYMBOLS.index("XAUUSD") if "XAUUSD" in INTERNAL_SYMBOLS else 0)
+        interval_label = st.selectbox("Interval", list(INTERVAL_MAP.keys()), index=2)
+        bars = st.slider("Bars", 220, 1000, 400, 20)
+        balance = st.number_input("Balance (USD)", min_value=10.0, value=500.0, step=50.0)
+        risk_pct = st.number_input("Risk %", min_value=0.1, max_value=5.0, value=1.0, step=0.1)
+    else:
+        symbol = "XAUUSD"
+        interval_label = "15 Min"
+        bars = 400
+        balance = 500.0
+        risk_pct = 1.0
+
+    st.markdown("<div style='height:2px;background:linear-gradient(90deg,transparent,#ff2d7b,transparent);margin:12px 0;'></div>", unsafe_allow_html=True)
+
+    # API Keys section
+    with st.expander("🔑 API KEYS", expanded=False):
+        _td = st.text_input("Twelve Data", value=st.session_state.get("td_key", _ENV_TD), type="password", key="td_inp", placeholder="paste key...")
+        _xai = st.text_input("xAI Grok", value=st.session_state.get("xai_key", _ENV_XAI), type="password", key="xai_inp", placeholder="paste key...")
+        if _td:
+            st.session_state["td_key"] = _td
+        if _xai:
+            st.session_state["xai_key"] = _xai
+        _GROK_MODELS = ["grok-4-1-fast-non-reasoning", "grok-4-1-fast-reasoning", "grok-4.20-0309-non-reasoning"]
+        _gm = st.selectbox("Grok Model", _GROK_MODELS, index=0, key="grok_model_sel")
+        st.session_state["grok_model"] = _gm
+        td_ok = "✅" if _td else "❌"
+        xai_ok = "✅" if _xai else "❌"
+        st.markdown(f"<div style='font-size:11px;color:#8b9ab0;font-family:Share Tech Mono,monospace;'>{td_ok} TD &nbsp; {xai_ok} xAI</div>", unsafe_allow_html=True)
+        c1, c2 = st.columns(2)
+        if _xai and c1.button("Test Grok"):
+            ok, msg = test_grok_connection(_xai)
+            (st.success if ok else st.error)(msg)
+        if _xai and c2.button("List Models"):
+            try:
+                _r = requests.get("https://api.x.ai/v1/models",
+                                  headers={"Authorization": f"Bearer {_xai}"}, timeout=10)
+                if _r.status_code == 200:
+                    _ids = [m["id"] for m in _r.json().get("data", [])]
+                    st.success("Available: " + ", ".join(_ids) if _ids else "No models returned")
+                else:
+                    st.error(f"HTTP {_r.status_code}: {_r.text[:120]}")
+            except Exception as e:
+                st.error(str(e))
+
+    # MT5 section
+    with st.expander("📡 MT5 LIVE", expanded=False):
+        _ma_tok = st.text_input("MetaApi Token", value=st.session_state.get("ma_token", ""), type="password", key="ma_tok_inp")
+        _ma_acc = st.text_input("Account ID", value=st.session_state.get("ma_account", ""), key="ma_acc_inp")
+        _ma_sfx = st.text_input("Symbol suffix", value=st.session_state.get("ma_sym_suffix", ".r"), key="ma_sfx_inp")
+        if _ma_tok:
+            st.session_state["ma_token"] = _ma_tok
+        if _ma_acc:
+            st.session_state["ma_account"] = _ma_acc
+        st.session_state["ma_sym_suffix"] = _ma_sfx
+        _mab1, _mab2 = st.columns(2)
+        if _ma_tok and _ma_acc and _mab1.button("Test MT5"):
+            _ok, _msg = test_mt5_connection(_ma_tok, _ma_acc)
+            (st.success if _ok else st.error)(_msg)
+        if _ma_tok and _ma_acc and _mab2.button("Deploy"):
+            _ok, _msg = deploy_mt5_account(_ma_tok, _ma_acc)
+            (st.success if _ok else st.error)(_msg)
 
     # Logout
     if st.session_state.get("user"):
-        st.divider()
+        st.markdown("<div style='height:2px;background:linear-gradient(90deg,transparent,#39ff14,transparent);margin:12px 0;'></div>", unsafe_allow_html=True)
         user = st.session_state.user
         user_email = user.get("email", "User")
-        st.markdown(f"<div style='color:#9ca3af;font-size:12px;'>Logged in as:<br><strong style='color:#00d4aa;'>{user_email}</strong></div>", unsafe_allow_html=True)
-        if st.button("Logout", use_container_width=True):
+        st.markdown(f"<div style='color:#8b9ab0;font-size:11px;font-family:Share Tech Mono,monospace;'>Logged in as:<br><strong style='color:#39ff14;text-shadow:0 0 6px rgba(57,255,20,0.4);'>{user_email}</strong></div>", unsafe_allow_html=True)
+        if st.button("⚡ Logout", use_container_width=True):
             if _auth_client:
                 _auth_client.sign_out(st.session_state.get("access_token", ""))
             for k in ["access_token", "refresh_token", "user"]:
@@ -2396,12 +2464,66 @@ with st.sidebar:
             _clear_browser_session()
             st.rerun()
 
+    # ARIA anime avatar in sidebar
+    st.markdown("""
+    <div style='text-align:center;padding:16px 0 8px;'>
+        <div style='display:inline-block;width:60px;height:60px;border-radius:50%;
+                    border:2px solid #ff2d7b;box-shadow:0 0 15px rgba(255,45,123,0.4);
+                    background:linear-gradient(135deg,#1a1a3e,#0d0b1e);
+                    display:flex;align-items:center;justify-content:center;margin:0 auto;'>
+            <span style='font-size:28px;'>🌸</span>
+        </div>
+        <div style='font-family:Orbitron,monospace;font-size:9px;color:#ff2d7b;letter-spacing:.15em;margin-top:6px;
+                    text-shadow:0 0 6px rgba(255,45,123,0.4);'>
+            A.R.I.A // ONLINE
+        </div>
+        <div style='font-size:8px;color:#8b9ab0;font-family:Share Tech Mono,monospace;'>
+            AI Research & Intelligence Assistant
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
 interval = INTERVAL_MAP[interval_label]
 
-# ── MAIN ROUTING ──
-if "Live" in mode:
+# ── ANIME AI ASSISTANT FLOATING ELEMENT ──
+st.markdown("""
+<div class='aria-avatar' title='ARIA - Your AI Trading Assistant'>
+    🌸
+</div>
+""", unsafe_allow_html=True)
+
+# ── MAIN PAGE ROUTING ──
+if current_page == "Dashboard":
     render_live(symbol, interval, bars, balance, risk_pct, _notifier)
-elif "Backtest" in mode:
+
+elif current_page == "News Intel":
+    cyberpunk_header("NEWS INTELLIGENCE", "Real-time market intel powered by ARIA")
+    _grok_key = get_xai_key()
+    _te_key = TE_API_KEY
+    render_news_dashboard(_grok_key, _te_key)
+
+elif current_page == "MT5 Analysis":
+    cyberpunk_header("MT5 TRADE ANALYSIS", "Deep-dive into your trading performance")
+    _ma_tok_val = get_ma_token()
+    _ma_acc_val = get_ma_account()
+    _grok_key = get_xai_key()
+    render_mt5_analysis(_ma_tok_val, _ma_acc_val, _grok_key)
+
+elif current_page == "ARIA Chat":
+    cyberpunk_header("A.R.I.A", "AI Research & Intelligence Assistant")
+    _grok_key = get_xai_key()
+    render_aria_chat(_grok_key)
+
+elif current_page == "Academy":
+    cyberpunk_header("TRADING ACADEMY", "Level up your trading skills")
+    render_academy()
+
+elif current_page == "Community":
+    cyberpunk_header("COMMUNITY NEXUS", "Share trades, learn together")
+    render_forum()
+
+elif current_page == "Backtest":
     render_backtest(get_td_key())
-else:
+
+elif current_page == "Journal":
     render_journal()
