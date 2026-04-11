@@ -45,7 +45,7 @@ from pages_grok_chat import render_grok_chat as render_nami_chat
 from pages_mt5_analysis import render_mt5_analysis
 from pages_academy import render_academy
 from pages_forum import render_forum
-from anime_theme import render_nami_character, render_anime_welcome, render_anime_sidebar_decor, inject_anime_css
+from anime_theme import render_nami_character, render_anime_welcome, render_anime_sidebar_decor, inject_anime_css, render_cyberpunk_ambient
 from pages_tradingview import render_tradingview_page
 
 # GROK_API_KEY may not be in config, use xAI key pattern instead
@@ -2487,6 +2487,7 @@ with st.sidebar:
 
     # NAMI anime character in sidebar
     render_nami_character()
+    render_cyberpunk_ambient()
     render_anime_sidebar_decor()
 
 interval = INTERVAL_MAP[interval_label]
